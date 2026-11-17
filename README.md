@@ -23,9 +23,17 @@
 ## 3. 快速开始
 
 ```bash
-unzip ssr-ubuntu2204-dual-v2.0.0.zip
-cd ssr-ubuntu2204-dual
-sudo bash install.sh
+cd ~/vps_ubuntu
+
+# 统一 文件的换行格式
+sed -i 's/\r$//' \
+  bin/ssr-admin.py bin/admin-install.sh \
+  bin/ssr_paths.py bin/ssr_backend.py \
+  systemd/ssr-admin.service
+
+sudo bash manage.sh admin-install &&
+sudo systemctl restart ssr &&
+sudo bash manage.sh admin
 ```
 
 交互菜单：
