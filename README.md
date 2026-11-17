@@ -123,6 +123,8 @@ SSR 不提供盲目自动更新。由于上游长期缺少活跃维护，更新�
 
 ## 10. Web / 终端账号管理
 
+若需要 Windows 全局 TCP/UDP VPN，可独立部署 WireGuard，见 [docs/WIREGUARD.md](docs/WIREGUARD.md)。
+
 ```bash
 sudo bash manage.sh admin-install  # 先安装 SSR
 sudo systemctl restart ssr       # 让后端适配生效
