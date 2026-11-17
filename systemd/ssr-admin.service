@@ -1,0 +1,20 @@
+[Unit]
+Description=SSR local administration panel
+After=network.target ssr.service
+
+[Service]
+Type=simple
+User=root
+EnvironmentFile=/etc/ssr-admin/admin.env
+ExecStart=/usr/bin/python3 /opt/ssr-admin/bin/ssr-admin.py web
+Restart=on-failure
+RestartSec=3
+UMask=0077
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+ReadWritePaths=/etc/ssr /etc/ssr-admin /etc/sysctl.d
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

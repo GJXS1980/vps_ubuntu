@@ -3,10 +3,24 @@ set -Eeuo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 action="${1:-status}"
 component="${2:-all}"
+if [[ "$action" == admin ]]; then
+  shift
+  exec python3 "$ROOT/bin/ssr-admin.py" "$@"
+fi
+if [[ "$action" == admin-install ]]; then
+  exec bash "$ROOT/bin/admin-install.sh"
+fi
+# Both documented forms are accepted: `ssr status` and `status ssr`.
+if [[ "$action" == ssr || "$action" == rust ]]; then
+  component="$action"
+  action="${2:-status}"
+fi
 svc_for(){ case "$1" in ssr) echo ssr;; rust) echo shadowsocks-rust;; *) return 1;; esac; }
 if [[ "$action" == check ]]; then exec bash "$ROOT/tests/smoke-test.sh"; fi
 if [[ "$action" == status ]]; then
-  for s in ssr shadowsocks-rust; do
+  services=(ssr shadowsocks-rust)
+  if [[ "$component" == ssr || "$component" == rust ]]; then services=("$(svc_for "$component")"); fi
+  for s in "${services[@]}"; do
     if systemctl list-unit-files "$s.service" --no-legend 2>/dev/null | grep -q "$s.service"; then
       systemctl --no-pager --full status "$s" || true
     else echo "$s: 未安装"; fi

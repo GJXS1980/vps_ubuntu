@@ -10,11 +10,17 @@ check "Rust unit 校验（若已安装）" '[[ ! -f /etc/systemd/system/shadowso
 check "SSR 服务状态（若已安装）" '[[ ! -f /etc/systemd/system/ssr.service ]] || systemctl is-active --quiet ssr'
 check "Rust 服务状态（若已安装）" '[[ ! -f /etc/systemd/system/shadowsocks-rust.service ]] || systemctl is-active --quiet shadowsocks-rust'
 if [[ -f /etc/ssr/config.json ]]; then
- p=$(python3 -c 'import json;print(json.load(open("/etc/ssr/config.json"))["server_port"])')
- check "SSR TCP 监听 $p" "ss -lnt | grep -q ':$p '"
+ ports=$(python3 -c 'import json;c=json.load(open("/etc/ssr/config.json"));print(" ".join(str(int(p)) for p in (c.get("port_password") or {str(c["server_port"]):c["password"]})))') || fail=1
+ for p in $ports; do
+  check "SSR TCP 监听 $p" "ss -H -lnt 'sport = :$p' | grep -q ."
+ done
 fi
 if [[ -f /etc/shadowsocks-rust/config.json ]]; then
  p=$(python3 -c 'import json;print(json.load(open("/etc/shadowsocks-rust/config.json"))["server_port"])')
  check "Rust TCP 监听 $p" "ss -lnt | grep -q ':$p '"
 fi
+for unit in ssr-admin ssr-admin-firewall; do
+ check "$unit unit 校验（若已安装）" "[[ ! -f /etc/systemd/system/$unit.service ]] || systemd-analyze verify /etc/systemd/system/$unit.service"
+ check "$unit 服务状态（若已安装）" "[[ ! -f /etc/systemd/system/$unit.service ]] || systemctl is-active --quiet $unit"
+done
 exit "$fail"

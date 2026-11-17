@@ -9,11 +9,13 @@ echo "1) SSR 兼容服务"
 echo "2) Shadowsocks-Rust 现代 SS 服务"
 echo "3) 两者都安装"
 echo "4) 环境检查"
-read -r -p "请选择 [1-4]: " choice
+echo "5) 安装 Web 与终端账号管理器（先安装 SSR）"
+read -r -p "请选择 [1-5]: " choice
 case "$choice" in
   1) exec bash "$ROOT/bin/ssr-install.sh" ;;
   2) exec bash "$ROOT/bin/rust-install.sh" ;;
   3) bash "$ROOT/bin/ssr-install.sh"; bash "$ROOT/bin/rust-install.sh" ;;
-  4) exec "$ROOT/manage.sh" check ;;
+  4) exec bash "$ROOT/manage.sh" check ;;
+  5) exec bash "$ROOT/bin/admin-install.sh" ;;
   *) echo "已取消"; exit 0 ;;
 esac

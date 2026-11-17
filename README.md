@@ -106,9 +106,23 @@ SSR 不提供盲目自动更新。由于上游长期缺少活跃维护，更新�
 - 不向公网暴露本机管理接口；Rust 服务仅监听代理端口。
 - 不将密码写入命令行历史；配置文件权限限制为 root 可读写。
 - 不覆盖已有 `/etc/ssr`、`/etc/shadowsocks-rust` 或 `/opt` 目录；安装器检测到冲突会退出。
-- 不自动改动 SSH、防火墙、内核或 BBR。
+- 基础代理安装不改动 SSH、防火墙、内核或 BBR；管理器仅在显式操作时修改其自有防火墙链和 BBR 配置。
 - 日志可能包含客户端 IP 等元数据，按最小留存原则管理。
 
 ## 9. 验收入口
 
 请按 `docs/DEPLOYMENT.md` 部署，按 `docs/TEST_PLAN.md` 测试，按 `docs/ACCEPTANCE.md` 签署验收。测试脚本 `tests/smoke-test.sh` 只做服务状态、配置、端口监听和 systemd unit 的本机检查；真实客户端握手必须另行验证。
+
+## 10. Web / 终端账号管理
+
+```bash
+sudo bash manage.sh admin-install  # 先安装 SSR
+sudo systemctl restart ssr       # 让后端适配生效
+sudo bash manage.sh admin        # 终端交互菜单
+```
+
+支持端口账号增删、独立限速、协议设备限制、当前 TCP IP、连接链接和本地二维码、单/多端口切换、BBR 启用/恢复、SMTP 与 BT/PT 出口封禁。Web 通过 SSH 隧道访问，安装器创建开机启动服务和独立管理令牌。
+
+**范围说明**：限速与设备限制要求单 worker，启用这些限制的账号仅提供 TCP；设备限制目前支持 auth_sha1_v4，按客户端标识统计。BT/PT 为端口和明文特征拦截，不保证识别加密流量。锐速提供内核/架构/SHA256 校验后的本地包安装入口，尚无经验证兼容 Ubuntu 22.04 的内置安装包。
+
+安装、Web 访问、完整命令、配置回退和锐速接入说明见 [docs/ADMIN.md](docs/ADMIN.md)。自动测试与实机验收见 [docs/TEST_PLAN.md](docs/TEST_PLAN.md)。

@@ -1,0 +1,13 @@
+[Unit]
+Description=Restore SSR-only egress policy
+After=network-pre.target ufw.service
+Before=ssr.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/ssr-admin/bin/ssr-admin.py firewall --data '{"action":"apply"}'
+RemainAfterExit=true
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

@@ -59,3 +59,27 @@ python3 -m json.tool templates/rust-config.example.json >/dev/null
 - systemd unit 启用 NoNewPrivileges、ProtectSystem、ProtectHome。
 - 防火墙只开放必要端口。
 - 管理操作仅限 sudo/root。
+
+## 7. SSR 管理器验收
+
+运行 `python3 -m unittest discover -s tests -p 'test_admin.py' -v`；这些测试模拟内核和 QR 编码器，不代表实机通过。
+
+Ubuntu 22.04 测试机必须进一步验证：
+
+| 场景 | 操作与预期 |
+|---|---|
+| Web 安装 | admin-install 后两个管理 unit active；仅 127.0.0.1:9080 监听；SSH 隧道可访问 |
+| HTTP 认证 | 无令牌/错误令牌拒绝；正确令牌可操作；外站 Origin 拒绝 |
+| 多账号 | 添加两个端口；重启后都能连接；删除一个不影响另一个配置；拒绝删除最后一个 |
+| 独立限速 | 两账号设置不同限速，真实 TCP 并发测吞吐；同端口 IPv4/IPv6 合计每方向不超过所设速率（允许短时突发） |
+| 设备上限 | auth_sha1_v4 设置 2；三个独立客户端进程产生不同标识，第三个应拒绝；IPv4/IPv6 混合测试；静默约三分钟后可释放 |
+| UDP 限制 | 设置限速或设备限制后 UDP 不监听；两项都解除并重启后 UDP 恢复；不接受 UDP 绕过限额 |
+| 分享扫码 | 扫描终端/Web QR；实际端口、密码、协议、混淆匹配；IPv6 SSR 导入测试；origin/plain 额外测 SS |
+| BBR 回退 | 记录原 sysctl 与专属文件；启用后值为 bbr/fq；重复启用后关闭仍恢复初始值；重启验证持久化 |
+| SMTP 作用域 | SSR 代理出口 TCP 25/465/587 拒绝；非 ssr 用户的允许流量与 SSH 不受影响；IPv4/IPv6 分别验证 |
+| BT/PT | 使用自建测试服务验证默认端口/特征拦截；记录加密、分段、非标准端口漏检；不要把漏检视为完整 DPI 已实现 |
+| 规则回退 | 在隔离测试机模拟 IPv6 规则失败，IPv4 自有链恢复，其他防火墙链不变 |
+| 开机恢复 | 重启机器后规则恢复；重载 UFW 后重启 ssr-admin-firewall 并核对 runtime 状态 |
+| 锐速 | 无包/哈希错误/内核不匹配均拒绝执行；只有供应商验证的包才能测试安装；安装后另验模块、授权和性能 |
+
+尚未在真实 Ubuntu VPS 完成以上验收，不应将单元测试结果记录为生产验收通过。
