@@ -45,6 +45,9 @@ class AccountTests(unittest.TestCase):
         self.backend = patch.object(admin, 'check_speed_backend')
         self.backend.start()
         self.addCleanup(self.backend.stop)
+        self.paths = patch.object(admin, 'server_for', return_value=Path('/test/server.py'))
+        self.paths.start()
+        self.addCleanup(self.paths.stop)
 
     def execute(self, op, **data):
         return admin.execute(self.path, op, data)

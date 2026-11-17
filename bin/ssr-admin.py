@@ -16,6 +16,7 @@ from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import urlencode
 from ssr_backend import check_speed_backend, patch_server
+from ssr_paths import installation, server_for
 
 CONFIG = Path('/etc/ssr/config.json')
 PROTOCOLS = {'auth_sha1_v4'}  # audited client-id counter; compatible variants bypass it
@@ -167,7 +168,7 @@ def execute(path, op, data):
     if not isinstance(data, dict):
         raise ValueError('参数必须为 JSON 对象')
     if op == 'backend-patch':
-        return patch_server('/opt/ssr/shadowsocks/server.py')
+        return patch_server(server_for(path))
     if op in ('bbr', 'firewall', 'ruisu'):
         from ssr_system import system_action
         return system_action(op, data)
@@ -214,7 +215,7 @@ def execute(path, op, data):
                         raise ValueError('不能删除最后一个账号')
                     del users[port]
                 elif op == 'speed':
-                    check_speed_backend()
+                    check_speed_backend(server_for(path))
                     if integer(c.get('workers', 1), 1) != 1:
                         raise ValueError('独立限速要求 workers=1，多个 worker 的计数不共享')
                     users[port]['speed_limit_per_user'] = integer(data['value'])
@@ -224,7 +225,7 @@ def execute(path, op, data):
                         raise ValueError('设备限制仅支持 auth_sha1_v4（不含 compatible）；请先使用该协议')
                     if integer(c.get('workers', 1), 1) != 1:
                         raise ValueError('设备限制要求 workers=1，多个 worker 的计数不共享')
-                    check_speed_backend()
+                    check_speed_backend(server_for(path))
                     limit = integer(data['value'], 0, 4096)
                     users[port]['protocol_param'] = str(limit) if limit else ''
                     users[port]['ssr_admin_devices'] = limit
@@ -343,7 +344,7 @@ def serve(path, port, token):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--config', type=Path, default=CONFIG)
+    p.add_argument('--config', type=Path, default=None)
     p.add_argument('operation', nargs='?', default='menu', choices=sorted(WEB_OPS | {'web', 'backend-patch', 'ruisu', 'menu'}))
     p.add_argument('--port', type=int, default=9080, help='Web 监听端口')
     p.add_argument('--data', default='{}', help='JSON 参数；--data - 从标准输入读取')
@@ -351,6 +352,8 @@ def main():
     if os.geteuid() != 0:
         p.error('请使用 sudo/root')
     try:
+        if a.config is None:
+            a.config = CONFIG if a.operation in ('bbr', 'ruisu', 'firewall') else installation()[0]
         if a.operation == 'menu':
             require_config(a.config)
             terminal_menu(a.config)

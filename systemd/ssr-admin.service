@@ -13,7 +13,7 @@ UMask=0077
 PrivateTmp=true
 ProtectHome=true
 ProtectSystem=full
-ReadWritePaths=/etc/ssr /etc/ssr-admin /etc/sysctl.d
+ReadWritePaths=-/etc/ssr -/etc/shadowsocksr /etc/ssr-admin /etc/sysctl.d
 NoNewPrivileges=true
 
 [Install]

@@ -2,6 +2,8 @@
 
 ## 安装和访问
 
+管理器也支持现有 `/etc/shadowsocksr/config.json` 与 `/opt/shadowsocksr/shadowsocks/server.py` 布局。自动检测要求配置与源码同时存在；检测到两套完整安装时拒绝自动选择。通过 `LoadCredential=config.json:/etc/shadowsocksr/config.json` 运行的服务保留原 unit：管理器修改凭据源文件，重启 SSR 时 systemd 重新加载。不要编辑 `/run/credentials` 中的运行时副本，也不要创建第二套配置。已有服务器只需同步新版管理器文件后执行 admin-install，无需重新安装 SSR。
+
 先按 README 安装 SSR，再在项目目录执行：
 
 ```bash
