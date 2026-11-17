@@ -1,0 +1,19 @@
+[Unit]
+Description=ShadowsocksR compatibility server
+After=network-online.target
+Wants=network-online.target
+[Service]
+Type=simple
+User=ssr
+Group=ssr
+WorkingDirectory=/opt/ssr/shadowsocks
+ExecStart=/opt/ssr/venv/bin/python /opt/ssr/shadowsocks/server.py -c /etc/ssr/config.json
+Restart=on-failure
+RestartSec=3
+LimitNOFILE=65535
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+[Install]
+WantedBy=multi-user.target

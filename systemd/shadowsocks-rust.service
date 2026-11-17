@@ -1,0 +1,18 @@
+[Unit]
+Description=Shadowsocks Rust server
+After=network-online.target
+Wants=network-online.target
+[Service]
+Type=simple
+User=ssrust
+Group=ssrust
+ExecStart=/opt/shadowsocks-rust/ssserver -c /etc/shadowsocks-rust/config.json
+Restart=on-failure
+RestartSec=3
+LimitNOFILE=65535
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+[Install]
+WantedBy=multi-user.target
