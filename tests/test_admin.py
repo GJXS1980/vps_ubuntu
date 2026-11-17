@@ -52,6 +52,19 @@ class AccountTests(unittest.TestCase):
     def config(self):
         return json.loads(self.path.read_text())
 
+    def test_missing_config_reports_installation_before_lock(self):
+        missing = self.path.parent / 'absent' / 'config.json'
+        with patch.object(admin, 'config_lock') as lock:
+            with self.assertRaisesRegex(ValueError, 'ssr-install.sh'):
+                admin.execute(missing, 'add', {'port': 5552})
+            lock.assert_not_called()
+        self.assertFalse(missing.parent.exists())
+
+    def test_missing_config_blocks_menu(self):
+        with patch.object(sys, 'argv', ['ssr-admin.py', '--config', str(self.path.parent / 'missing.json'), 'menu']), patch.object(admin.os, 'geteuid', return_value=0, create=True), patch.object(admin, 'terminal_menu') as menu, patch('sys.stderr'):
+            self.assertEqual(admin.main(), 1)
+            menu.assert_not_called()
+
     def test_independent_speed_and_backup(self):
         self.execute('add', port=8390, password='new')
         before = self.path.read_text()

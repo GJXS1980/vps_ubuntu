@@ -6,7 +6,15 @@ set -Eeuo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP=/opt/ssr-admin
 [[ ! -e "$APP" && ! -e /etc/systemd/system/ssr-admin.service && ! -e /etc/systemd/system/ssr-admin-firewall.service ]] || { echo '管理器已存在；请备份后按文档更新，拒绝覆盖'; exit 1; }
-[[ -f /etc/ssr/config.json && -f /opt/ssr/shadowsocks/server.py ]] || { echo '请先安装 SSR'; exit 1; }
+if [[ ! -f /etc/ssr/config.json || ! -f /opt/ssr/shadowsocks/server.py ]]; then
+  echo 'SSR 尚未安装或安装未完成，管理器安装已停止。'
+  [[ -f /etc/ssr/config.json ]] || echo '缺少：/etc/ssr/config.json'
+  [[ -f /opt/ssr/shadowsocks/server.py ]] || echo '缺少：/opt/ssr/shadowsocks/server.py'
+  echo '先在项目目录执行：sudo bash bin/ssr-install.sh'
+  echo '成功后执行：sudo bash manage.sh admin-install'
+  echo '若安装器提示已有文件，请检查原安装日志，不要删除现有配置或创建空配置。'
+  exit 1
+fi
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y python3 qrencode iptables iproute2 kmod openssl procps

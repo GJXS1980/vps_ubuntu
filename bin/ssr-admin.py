@@ -64,6 +64,7 @@ def accounts(c):
 
 @contextmanager
 def config_lock(path):
+    require_config(path)
     import fcntl
     fd = os.open(str(path) + '.lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
     try:
@@ -71,6 +72,15 @@ def config_lock(path):
         yield
     finally:
         os.close(fd)
+
+
+def require_config(path):
+    if not path.is_file():
+        raise ValueError(
+            f'未找到 SSR 配置：{path}。SSR 尚未安装或安装未完成。'
+            '请先在项目目录执行 sudo bash bin/ssr-install.sh；'
+            '安装成功后再执行 sudo bash manage.sh admin-install。'
+            '若此前安装失败，请检查安装日志和现有文件；不要手动创建空配置或锁文件。')
 
 
 def atomic_write(path, text, mode=0o600, owner=None):
@@ -162,9 +172,11 @@ def execute(path, op, data):
         from ssr_system import system_action
         return system_action(op, data)
     if op == 'restart':
+        require_config(path)
         run('systemctl', 'restart', 'ssr')
         run('systemctl', 'is-active', '--quiet', 'ssr')
         return {'active': True}
+    require_config(path)
     with config_lock(path):
         c = json.loads(path.read_text(encoding='utf-8-sig'))
         users = accounts(c)
@@ -340,8 +352,10 @@ def main():
         p.error('请使用 sudo/root')
     try:
         if a.operation == 'menu':
+            require_config(a.config)
             terminal_menu(a.config)
         elif a.operation == 'web':
+            require_config(a.config)
             token = os.environ.get('SSR_ADMIN_TOKEN', '')
             if len(token) < 32:
                 p.error('设置 SSR_ADMIN_TOKEN，至少 32 字符')
