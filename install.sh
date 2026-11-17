@@ -11,9 +11,9 @@ echo "3) 两者都安装"
 echo "4) 环境检查"
 read -r -p "请选择 [1-4]: " choice
 case "$choice" in
-  1) exec "$ROOT/bin/ssr-install.sh" ;;
-  2) exec "$ROOT/bin/rust-install.sh" ;;
-  3) "$ROOT/bin/ssr-install.sh"; "$ROOT/bin/rust-install.sh" ;;
+  1) exec bash "$ROOT/bin/ssr-install.sh" ;;
+  2) exec bash "$ROOT/bin/rust-install.sh" ;;
+  3) bash "$ROOT/bin/ssr-install.sh"; bash "$ROOT/bin/rust-install.sh" ;;
   4) exec "$ROOT/manage.sh" check ;;
   *) echo "已取消"; exit 0 ;;
 esac
