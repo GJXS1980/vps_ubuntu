@@ -86,19 +86,22 @@ class Workflow(unittest.TestCase):
         self.assertEqual(self.cmd("export", "user25"), other)
         self.assertIn("AllowedIPs = 0.0.0.0/0, ::/0", rotated)
 
-    def test_retry(self):
+    def test_rollback_and_pending_recovery(self):
         self.cmd("init")
+        before = wg.CONF.read_bytes()
         wg.LIVE.touch()
-        with patch.object(wg, "run", side_effect=["stripped config", OSError("sync failed")]) as run:
-            with self.assertRaises(OSError):
+        with patch.object(wg, "run", side_effect=["candidate", OSError("sync failed"),
+                                                 "previous", OSError("rollback failed")]) as run:
+            with self.assertRaisesRegex(wg.CustomerError, "回滚记录"):
                 self.cmd("disable")
             self.assertEqual(run.call_args.args, ("wg", "syncconf", "wgvps", "/dev/stdin"))
-            self.assertEqual(run.call_args.kwargs["data"], "stripped config\n")
+            self.assertEqual(run.call_args.kwargs["data"], "previous\n")
         self.assertTrue(wg.PENDING.exists())
-        with patch.object(wg, "run", side_effect=["stripped config", ""]):
-            self.assertIn("user02 disabled global", self.cmd("list"))
+        self.assertEqual(wg.CONF.read_bytes(), before)
+        with patch.object(wg, "run", side_effect=["previous", ""]):
+            self.assertIn("user02 enabled global", self.cmd("list"))
         self.assertFalse(wg.PENDING.exists())
-        self.assertNotIn("# user02\n", wg.CONF.read_text())
+        self.assertEqual(wg.CONF.read_bytes(), before)
 
     def test_links_and_dual_profiles(self):
         self.cmd("init")
@@ -193,3 +196,42 @@ class Workflow(unittest.TestCase):
             rows = json.loads(self.cmd("status"))
             self.assertEqual(rows[0]["status"], "unknown")
             self.assertEqual(rows[-1]["status"], "disabled")
+
+    def test_groups_batches_recovery_and_audit(self):
+        self.cmd("init",count=3)
+        before=self.cmd("export","user03")
+        def edit(action,**data):
+            with patch.object(sys,"stdin",io.StringIO(json.dumps(data))), contextlib.redirect_stdout(io.StringIO()) as out:
+                wg.audited(SimpleNamespace(command=action))
+            return out.getvalue()
+        edit("group-create",label="巡检")
+        gid=next(iter(json.loads(wg.STATE.read_text())["groups"]))
+        edit("batch-group",group=gid,ids=["user01","user02"])
+        edit("group-rename",group=gid,label="项目 A")
+        with self.assertRaises(wg.CustomerError):
+            edit("group-delete",group=gid)
+        result=json.loads(edit("batch-disable",ids=["user02","user02","user99"]))
+        self.assertEqual(result,{"count":1,"errors":["user99 已不存在"]})
+        with self.assertRaises(wg.CustomerError):
+            edit("batch-export",ids=["user01","user02"])
+        edit("batch-enable",ids=["user02"])
+        self.assertEqual([b["name"] for b in json.loads(edit("batch-export",ids=["user02"]))],["user02"])
+        self.assertEqual(self.cmd("export","user03"),before)
+        edit("batch-group",group="",ids=["user01","user02"])
+        edit("group-delete",group=gid)
+        self.assertEqual(json.loads(wg.STATE.read_text())["groups"],{})
+        audit=wg.read_audit()
+        self.assertIn("部分失败",[r["result"] for r in audit])
+        self.assertTrue(all("private" not in str(r) and "PresharedKey" not in str(r) for r in audit))
+
+    def test_snapshot_real_command_fields_and_legacy_defaults(self):
+        self.cmd("init",count=1)
+        (wg.STATE.parent/"wgvps-online-window").write_text("15")
+        output={"latest-handshakes":"pub-old 980","endpoints":"pub-old 192.0.2.9:2345","transfer":"pub-old 123 456"}
+        with patch.object(wg,"run",side_effect=lambda *a:output[a[-1]]),patch.object(wg.time,"time",return_value=1000):
+            data=json.loads(self.cmd("snapshot"))
+        row=data["rows"][0]
+        self.assertEqual((row["status"],row["rx"],row["tx"],row["endpoint"]),("offline",123,456,"192.0.2.9:2345"))
+        self.assertEqual(row["group"],"")
+        self.assertIsNone(row["created"])
+        self.assertEqual(set(row)&{"psk","private","public","ticket","profiles"},set())

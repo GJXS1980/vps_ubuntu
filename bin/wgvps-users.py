@@ -7,6 +7,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 from pathlib import Path
 import secrets
 import subprocess
@@ -38,7 +39,7 @@ def atomic(path, data):
 
 def run(*args, data=None):
     return subprocess.run(args, input=data, text=True, check=True,
-                          stdout=subprocess.PIPE).stdout.strip()
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE).stdout.strip()
 
 
 def public(key):
@@ -118,10 +119,15 @@ def bundle(state, name):
 
 def reconcile(state):
     # Leave PENDING in place until both persistent and live state agree.
-    atomic(CONF, server_config(state))
+    config = server_config(state)
     if LIVE.exists():
-        stripped = run("wg-quick", "strip", str(CONF))
-        run("wg", "syncconf", "wgvps", "/dev/stdin", data=stripped + "\n")
+        # Parse the candidate under its real interface basename before publishing it.
+        with tempfile.TemporaryDirectory(dir=CONF.parent) as stage:
+            candidate = Path(stage) / CONF.name
+            atomic(candidate, config)
+            stripped = run("wg-quick", "strip", str(candidate))
+            run("wg", "syncconf", "wgvps", "/dev/stdin", data=stripped + "\n")
+    atomic(CONF, config)
     if state["users"].get("user01", {}).get("enabled"):
         atomic(LEGACY, profile(state, "user01"))
     else:
@@ -129,26 +135,50 @@ def reconcile(state):
     PENDING.replace(STATE)
 
 
+def apply_state(state):
+    previous = STATE.read_text() if STATE.exists() else None
+    atomic(PENDING, json.dumps(state))
+    try:
+        reconcile(state)
+    except (OSError, ValueError, subprocess.CalledProcessError):
+        if previous is not None:
+            # Keep the rollback intent durable even when the interface is unavailable.
+            atomic(PENDING, previous)
+            try:
+                reconcile(json.loads(previous))
+            except (OSError, ValueError, subprocess.CalledProcessError):
+                raise CustomerError("同步失败，已保留回滚记录。请检查接口后重新查询") from None
+            raise CustomerError("同步失败，已恢复上一次客户配置") from None
+        raise
+
+
 class CustomerError(ValueError):
     pass
 
 
-def customer_name(users, exclude=None):
-    label = sys.stdin.read(257).strip()
+def validate_label(label):
+    label = label.strip()
     if not 1 <= len(label) <= 40 or not all(c.isalnum() or c in " _-" for c in label):
         raise CustomerError("名称须为 1 至 40 个字，可用中文、字母、数字、空格、下划线或短横线")
+    return label
+
+
+def customer_name(users, exclude=None, label=None):
+    label = validate_label(sys.stdin.read(257) if label is None else label)
     if any(label.casefold() in (key.casefold(), u.get("label", key).casefold())
            for key, u in users.items() if key != exclude):
         raise CustomerError("客户名称已存在")
     return label
 
 
-def customer_status(state):
+def customer_status(state, window=180, warnings=None):
     try:
         output = run("wg", "show", "wgvps", "latest-handshakes")
         handshakes = {key: int(stamp) for key, stamp in (row.split() for row in output.splitlines())}
     except (OSError, subprocess.CalledProcessError, ValueError):
         handshakes = {}
+        if warnings is not None:
+            warnings.append("握手读取失败")
     now = int(time.time())
     rows = []
     for name, user in state["users"].items():
@@ -161,10 +191,110 @@ def customer_status(state):
         elif age is None:
             status = "unknown"
         else:
-            status = "online" if age <= 180 else "offline"
+            status = "online" if age <= window else "offline"
         rows.append(dict(name=name, label=user.get("label", name), status=status,
                          address=addresses(name, user).split("/")[0], age=age))
     return rows
+
+
+def online_window():
+    window_file = STATE.parent / "wgvps-online-window"
+    window = int(window_file.read_text().strip()) if window_file.exists() else 180
+    if not 1 <= window <= 86400:
+        raise CustomerError("在线窗口须为 1 至 86400 秒")
+    return window
+
+
+def snapshot(state):
+    window = online_window()
+    warnings = []
+    rows = customer_status(state, window, warnings)
+    metrics = {}
+    for field in ("endpoints", "transfer"):
+        try:
+            for line in run("wg", "show", "wgvps", field).splitlines():
+                key, *values = line.split()
+                peer = metrics.setdefault(key, {})
+                if field == "endpoints":
+                    endpoint, = values
+                    peer["endpoint"] = None if endpoint == "(none)" else endpoint
+                else:
+                    rx, tx = map(int, values)
+                    peer.update(rx=rx, tx=tx)
+        except (OSError, ValueError, subprocess.CalledProcessError):
+            warnings.append(field + " 读取失败")
+    for row in rows:
+        user = state["users"][row["name"]]
+        row.update(metrics.get(user["public"], {}))
+        row.update(enabled=user["enabled"], group=user.get("group",""), created=user.get("created"),
+                   fingerprint=hashlib.sha256(user["public"].encode()).hexdigest()[:16])
+    return dict(rows=rows, groups=state.get("groups",{}), window=window, time=int(time.time()),
+                warning="；".join(warnings))
+
+
+def edit(state, args, data):
+    groups = state.setdefault("groups", {})
+    users = state["users"]
+    action = args.command
+    group = data.get("group", "")
+    if not isinstance(group, str) or (group and group not in groups):
+        raise CustomerError("分组不存在，请刷新")
+    if action.startswith("group-"):
+        if action != "group-create" and not group:
+            raise CustomerError("未分组不能修改")
+        if action == "group-delete":
+            if any(u.get("group")==group for u in users.values()):
+                raise CustomerError("仅可删除空分组")
+            args.targets, args.labels = [group], [groups[group]]
+            del groups[group]
+        else:
+            label = validate_label(data.get("label",""))
+            if label == "未分组" or any(label.casefold()==v.casefold() for k,v in groups.items()
+                                      if action=="group-create" or k!=group):
+                raise CustomerError("分组名称已存在")
+            if action=="group-create":
+                group=secrets.token_hex(8)
+            groups[group]=label
+            args.targets, args.labels = [group], [label]
+        atomic(STATE,json.dumps(state))
+        return
+    ids = data.get("ids", [])
+    if not isinstance(ids,list) or not 1 <= len(ids) <= CAPACITY or not all(
+            isinstance(k,str) and re.fullmatch(r"user[0-9]{2,16}",k) for k in ids):
+        raise CustomerError("客户选择无效")
+    ids=list(dict.fromkeys(ids))
+    args.targets=ids
+    args.labels=[users.get(k,{}).get("label",k) for k in ids]
+    missing=[k for k in ids if k not in users]
+    valid=[k for k in ids if k in users]
+    errors=[k+" 已不存在" for k in missing]
+    if action=="batch-export":
+        denied=[k for k in valid if not users[k]["enabled"]]
+        if missing or denied:
+            raise CustomerError("无法导出："+"，".join(errors+[k+" 已禁用" for k in denied]))
+        print(json.dumps([bundle(state,k) for k in valid]))
+        return
+    changed = False
+    for k in valid:
+        if action=="batch-group":
+            changed |= users[k].get("group","") != group
+            users[k]["group"]=group
+        else:
+            changed |= users[k]["enabled"] != (action=="batch-enable")
+            users[k]["enabled"]=action=="batch-enable"
+            if not users[k]["enabled"]:
+                users[k].pop("ticket",None)
+    if changed:
+        if action=="batch-group":
+            atomic(STATE,json.dumps(state))
+        else:
+            apply_state(state)
+    args.outcome="部分失败" if errors and valid else "失败" if errors else "成功"
+    args.reason="客户已不存在" if errors else ""
+    print(json.dumps(dict(count=len(valid), errors=errors)))
+
+
+EDIT_COMMANDS=("group-create","group-rename","group-delete","batch-enable","batch-disable","batch-group","batch-export")
 
 
 def manage(args):
@@ -179,8 +309,20 @@ def manage(args):
             state = initial(args.endpoint, args.count)
     else:
         state = json.loads(STATE.read_text())
+        if args.command == "snapshot":
+            print(json.dumps(snapshot(state)))
+            return
+        if args.command == "audit":
+            print(json.dumps(read_audit()))
+            return
+        if args.command in EDIT_COMMANDS:
+            data=json.loads(sys.stdin.read(16385))
+            if not isinstance(data,dict) or not all(isinstance(data.get(k,""),str) for k in ("group","label")):
+                raise CustomerError("操作参数无效")
+            edit(state,args,data)
+            return
         if args.command == "status":
-            print(json.dumps(customer_status(state)))
+            print(json.dumps(customer_status(state,online_window())))
             return
         if args.command == "list":
             for name, user in state["users"].items():
@@ -203,8 +345,18 @@ def manage(args):
                     return
             raise ValueError("领取码无效、已用或已过期")
         users = state["users"]
-        if args.command == "add":
-            label = customer_name(users)
+        if args.command in ("add","add-group"):
+            group=""
+            if args.command=="add-group":
+                data=json.loads(sys.stdin.read(1025))
+                if not isinstance(data,dict) or not all(isinstance(data.get(k),str) for k in ("group","label")):
+                    raise CustomerError("新增参数无效")
+                group=data["group"]
+                if group and group not in state.get("groups",{}):
+                    raise CustomerError("分组不存在")
+                label=customer_name(users,label=data["label"])
+            else:
+                label = customer_name(users)
             used = {u.get("host", int(k[4:]) + 1) for k, u in users.items()}
             host = next((h for h in range(2, 255) if h not in used), None)
             if host is None:
@@ -215,16 +367,19 @@ def manage(args):
                 number += 1
             name = f"user{number:02}"
             state["last_id"] = number
-            users[name] = dict(keys(), enabled=True, mode="global", label=label, host=host)
-            atomic(PENDING, json.dumps(state))
-            reconcile(state)
+            users[name] = dict(keys(), enabled=True, mode="global", label=label, host=host,
+                               group=group, created=int(time.time()))
+            args.targets, args.labels=[name],[label]
+            apply_state(state)
             print(name)
             return
         if args.user not in users:
             raise CustomerError("找不到该客户，请刷新管理页")
         user = users[args.user]
+        args.targets, args.labels=[args.user],[user.get("label",args.user)]
         if args.command == "rename":
             user["label"] = customer_name(users, args.user)
+            args.labels = [user["label"]]
             atomic(STATE, json.dumps(state))
             return
         if args.command in ("issue", "bundle", "export", "qr") and not user["enabled"]:
@@ -259,8 +414,43 @@ def manage(args):
             user["mode"] = args.mode
         else:
             user["enabled"] = args.command == "enable"
-    atomic(PENDING, json.dumps(state))
-    reconcile(state)
+    apply_state(state)
+
+
+def read_audit():
+    records=[]
+    for filename in ("wgvps-audit.jsonl.1","wgvps-audit.jsonl"):
+        path=STATE.parent / filename
+        if path.exists():
+            for line in path.read_text(encoding="utf-8").splitlines():
+                try:
+                    records.append(json.loads(line))
+                except ValueError:
+                    continue
+    return list(reversed(records[-200:]))
+
+
+def audited(args):
+    if args.command not in (*EDIT_COMMANDS,"add","add-group","rename","enable","disable","delete","rotate","mode"):
+        return manage(args)
+    outcome,reason="成功",""
+    try:
+        manage(args)
+        outcome=getattr(args,"outcome",outcome)
+        reason=getattr(args,"reason","")
+    except Exception as exc:
+        outcome="失败"
+        reason=str(exc) if isinstance(exc,CustomerError) else "操作未完成，请检查服务状态"
+        raise
+    finally:
+        path=STATE.parent / "wgvps-audit.jsonl"
+        if path.exists() and path.stat().st_size >= 1024*1024:
+            path.replace(path.with_suffix(".jsonl.1"))
+        record=dict(time=int(time.time()), action=args.command, targets=getattr(args,"targets",[]),
+                    labels=getattr(args,"labels",[]), result=outcome, reason=reason,
+                    source="Web admin" if os.environ.get("SUDO_USER")=="wgvps-web" else "CLI")
+        with path.open("a",encoding="utf-8") as log:
+            log.write(json.dumps(record,ensure_ascii=False)+"\n")
 
 
 def main():
@@ -270,6 +460,8 @@ def main():
     init.add_argument("endpoint")
     init.add_argument("--count", type=int, default=1)
     commands.add_parser("add", help="新增客户，从标准输入读取名称")
+    for command in (*EDIT_COMMANDS,"snapshot","audit","add-group"):
+        commands.add_parser(command)
     commands.add_parser("status", help="查看客户的连接状态与最近握手")
     commands.add_parser("list", help="列出客户编号、状态、模式和名称")
     commands.add_parser("redeem", help="从标准输入读取一次性领取码")
@@ -290,7 +482,7 @@ def main():
     os.umask(0o077)
     with (ROOT / ".wgvps-users.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        manage(args)
+        audited(args)
 
 
 if __name__ == "__main__":

@@ -4,6 +4,9 @@ umask 077
 [[ $EUID == 0 ]] || { echo '请使用 sudo/root'; exit 1; }
 src=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 address=${1:-10.66.77.1}
+for file in wgvps-users.py wgvps_web.py wgvps_views.py wgvps_admin.js ../systemd/wgvps-web.service; do
+  [[ -r "$src/$file" ]] || { echo "项目文件缺失：$file"; exit 1; }
+done
 [[ -f /etc/wireguard/wgvps-users.json ]] || { echo '请先安装 WireGuard 用户管理器'; exit 1; }
 network=$(python3 - "$address" <<'PY'
 import ipaddress, json, subprocess, sys
@@ -58,9 +61,13 @@ openssl x509 -req -in "$stage/tls.csr" -CA "$cfg/ca.crt" -CAkey "$cfg/ca.key" -C
 cat > "$stage/sudoers" <<'EOF'
 wgvps-web ALL=(root) NOPASSWD: /usr/local/sbin/wgvps-users status, /usr/local/sbin/wgvps-users list, /usr/local/sbin/wgvps-users redeem, /usr/local/sbin/wgvps-users issue user[0-9]*, /usr/local/sbin/wgvps-users enable user[0-9]*, /usr/local/sbin/wgvps-users disable user[0-9]*, /usr/local/sbin/wgvps-users rotate user[0-9]*, /usr/local/sbin/wgvps-users bundle user[0-9]*, /usr/local/sbin/wgvps-users bundles, /usr/local/sbin/wgvps-users add, /usr/local/sbin/wgvps-users rename user[0-9]*, /usr/local/sbin/wgvps-users delete user[0-9]*
 EOF
+for command in snapshot audit add-group group-create group-rename group-delete batch-enable batch-disable batch-group batch-export; do
+  printf 'wgvps-web ALL=(root) NOPASSWD: /usr/local/sbin/wgvps-users %s\n' "$command" >> "$stage/sudoers"
+done
 visudo -cf "$stage/sudoers"
 install -m 0440 "$stage/sudoers" /etc/sudoers.d/wgvps-web
 install -m 0755 "$src/wgvps-users.py" /usr/local/sbin/wgvps-users
+install -m 0644 "$src/wgvps_views.py" "$src/wgvps_admin.js" "$app/"
 install -m 0644 "$src/wgvps_web.py" "$app/wgvps_web.py"
 install -m 0600 "$stage/tls.key" "$cfg/tls.key"
 install -m 0644 "$stage/tls.crt" "$cfg/tls.crt"

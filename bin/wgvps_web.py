@@ -8,10 +8,15 @@ import os
 import re
 import secrets
 import subprocess
+import time
+import threading
 import zipfile
 from html import escape
 from pathlib import Path
 from urllib.parse import parse_qs
+import wgvps_views as views
+
+ADMIN_JS = Path(__file__).with_name("wgvps_admin.js").read_text(encoding="utf-8")
 
 MANAGER = "/usr/local/sbin/wgvps-users"
 STYLE = """
@@ -45,12 +50,39 @@ tbody tr:last-child td{border:0}tbody tr:hover{background:#f5faf9}.ip{font-varia
 @media(max-width:640px){nav,main{padding-left:12px;padding-right:12px}nav{gap:12px}.tools{align-items:stretch}
 .tools form:first-child{flex-basis:100%}.stats{gap:14px}.sheet table{min-width:560px}.filters{gap:8px}
 .filters label:first-child{flex-basis:100%}th,td{padding:10px}.client summary{overflow-wrap:anywhere}}
+nav,main{max-width:1520px}.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px}
+.stats span{background:white;border:1px solid var(--line);border-radius:10px;padding:14px 18px}
+.stats b{display:block;margin:6px 0 0;font-size:1.8rem}.stats span:nth-child(3){border-top:3px solid var(--accent)}
+.tools{display:flex;align-items:end}.sheet td,.sheet th{padding:9px 11px;white-space:nowrap}
+.sheet th a{text-decoration:none}.sheet form{display:inline-flex;align-items:center;padding:0;margin:0;border:0;gap:6px}
+.sheet input:not([type=checkbox]){max-width:150px}input[type=checkbox]{width:18px;height:18px;accent-color:var(--accent)}
+.drawer{position:fixed;inset:0 0 0 auto;width:min(440px,100%);z-index:4;background:white;padding:24px;overflow:auto;box-shadow:-8px 0 38px #15354530}
+.drawer dl{display:grid;grid-template-columns:auto 1fr;gap:8px}.drawer dt{color:var(--muted)}.drawer dd{margin:0;overflow-wrap:anywhere}
+.pager{display:flex;gap:16px;align-items:center}.pager a,.drawer>a{font-weight:600}
+.actionbar{display:flex;gap:12px;align-items:stretch;flex-wrap:wrap}.actionbar form{display:flex;align-items:end}.actionbar form:first-child{flex:1}
+#feedback:not(:empty){background:#e1f3ef;border-left:4px solid var(--accent);padding:10px 16px}
+@media(max-width:640px){nav{flex-wrap:wrap;gap:8px}nav strong{width:100%;margin-top:8px}nav a{padding:4px 3px}.stats{grid-template-columns:repeat(3,1fr)}}
 """
 
 
 def manager(*args, data=b""):
     return subprocess.run(["/usr/bin/sudo", "-n", MANAGER, *args], input=data,
                           capture_output=True, timeout=20, check=True).stdout
+
+
+# Briefly coalesce read-only requests from search, paging and concurrent tabs.
+_snapshot_lock = threading.Lock()
+_last_snapshot = None
+_sampled_at = 0.0
+
+
+def read_snapshot(reuse=False):
+    global _last_snapshot, _sampled_at
+    with _snapshot_lock:
+        if not reuse or _last_snapshot is None or time.monotonic() - _sampled_at >= 2:
+            _last_snapshot = json.loads(manager("snapshot"))
+            _sampled_at = time.monotonic()
+        return _last_snapshot
 
 
 def profiles(bundle, csrf=None):
@@ -77,69 +109,6 @@ def profiles(bundle, csrf=None):
             "代理模式下，在指定应用中设置 SOCKS5 地址 10.66.77.1，端口 1080。</p>" + "".join(cards))
 
 
-CONNECTION = {"online": "在线", "offline": "离线", "never": "尚无握手",
-              "unknown": "状态未知", "disabled": "已禁用"}
-
-
-def customer_directory(rows, query, csrf, path):
-    status_page = path == "/admin/status"
-    filters = parse_qs(query, max_num_fields=8)
-    term = filters.get("q", [""])[0].strip()
-    selected = filters.get("status", [""])[0]
-    focus = filters.get("customer", [""])[0]
-    options = ['<option value="">全部状态</option>']
-    for key, title in CONNECTION.items():
-        mark = " selected" if key == selected else ""
-        options.append(f'<option value="{key}"{mark}>{title}</option>')
-    form = (f'<form class="filters" method="get" action="{path}"><label>查找客户'
-            f'<input name="q" placeholder="名称、编号或 IPv4" value="{escape(term)}"></label>'
-            f'<label>连接状态<select name="status">{"".join(options)}</select></label>'
-            f'<button>查询 / 刷新</button><a href="{path}">重置</a></form>')
-    cards = []
-    hidden = f'<input type="hidden" name="csrf" value="{csrf}">'
-    for row in rows:
-        name, label, address = (row[k] for k in ("name", "label", "address"))
-        status = row["status"]
-        if selected and selected != status:
-            continue
-        if not any(term.casefold() in value.casefold() for value in (name, label, address)):
-            continue
-        name = escape(name)
-        caption = name if label == name else f"{escape(label)}（{name}）"
-        age = row["age"]
-        handshake = "—" if age is None else (f"{age} 秒前" if age < 60 else f"{age // 60} 分钟前")
-        pill = f'<span class="pill {status}">{CONNECTION[status]}</span>'
-        if status_page:
-            cards.append(f'<tr><td><strong>{escape(label)}</strong><small>{name}</small></td>'
-                         f'<td>{pill}</td><td class="ip">{escape(address)}</td><td>{handshake}</td>'
-                         f'<td><a href="/admin?customer={name}#{name}">管理</a></td></tr>')
-            continue
-        opened = " open" if name == focus else ""
-        if status == "disabled":
-            buttons = '<button name="action" value="enable">启用用户</button><button name="action" value="confirm-delete">删除已禁用客户…</button>'
-        else:
-            buttons = ('<button name="action" value="bundle">生成配置并分发</button>'
-                       '<button name="action" value="issue">签发内网领取链接</button>'
-                       '<button name="action" value="disable">禁用用户</button>')
-        cards.append(f'<section class="client" id="{name}"><details{opened}><summary>{caption} {pill}</summary>'
-                     f'<small>{escape(address)} · 最近握手：{handshake}</small>'
-                     f'<form method="post" action="/admin">{hidden}<input type="hidden" name="user" value="{name}">'
-                     f'{buttons}<button name="action" value="confirm-rotate">轮换密钥…</button>'
-                     '<label>新名称<input name="label" maxlength="40"></label>'
-                     '<button name="action" value="rename">保存名称</button></form></details></section>')
-    total_online = sum(row["status"] == "online" for row in rows)
-    stats = (f'<div class="stats"><span>客户总数<b>{len(rows)}</b></span><span>在线<b>{total_online}</b></span>'
-             f'<span>匹配<b>{len(cards)}</b></span></div>')
-    if status_page:
-        headers = "".join(f'<th scope="col">{col}</th>' for col in ("客户 / 编号", "状态", "隧道 IPv4", "最近握手", "操作"))
-        body = "".join(cards) or '<tr><td colspan="5">没有匹配的客户。</td></tr>'
-        return (stats + form + '<p class="hint">最近 3 分钟内有握手记为在线。点击“查询 / 刷新”获取最新状态。</p>'
-                f'<div class="sheet" role="region" aria-label="客户连接状态" tabindex="0">'
-                f'<table aria-label="客户连接状态"><thead><tr>{headers}</tr></thead><tbody>{body}</tbody></table></div>')
-    return stats + form + ("".join(cards) or "<p>没有匹配的客户。</p>")
-
-
-
 def application(env, start_response):
     nonce = secrets.token_urlsafe(20)
 
@@ -149,7 +118,7 @@ def application(env, start_response):
                 f'<style nonce="{nonce}">{STYLE}</style>{navigation}<main><h1>{title}</h1>{body}</main></html>').encode()
         start_response(status, [("Content-Type", "text/html; charset=utf-8"), ("Cache-Control", "no-store"),
                                 ("Referrer-Policy", "same-origin"), ("X-Content-Type-Options", "nosniff"),
-                                ("Content-Security-Policy", "default-src 'none'; img-src data:; "
+                                ("Content-Security-Policy", "default-src 'none'; connect-src 'self'; img-src data:; "
                                  f"style-src 'nonce-{nonce}'; script-src 'nonce-{nonce}'; "
                                  "form-action 'self'; frame-ancestors 'none'; base-uri 'none'"),
                                 ("Content-Length", str(len(html))), *extra])
@@ -167,7 +136,7 @@ def application(env, start_response):
             or env.get("HTTP_HOST") != origin[8:]):
         return page("仅供指定内网访问", status="403 Forbidden")
     path, method = env["PATH_INFO"], env["REQUEST_METHOD"]
-    if path not in ("/", "/admin", "/admin/status"):
+    if path != "/" and path not in views.PAGES:
         return page("页面不存在", status="404 Not Found")
     admin = path != "/"
     if admin:
@@ -176,7 +145,7 @@ def application(env, start_response):
         if not hmac.compare_digest(env.get("HTTP_AUTHORIZATION", "").encode(), auth):
             return page("需要管理员登录", status="401 Unauthorized",
                         extra=[("WWW-Authenticate", 'Basic realm="WireGuard Admin"')])
-        if path == "/admin/status" and method != "GET":
+        if path != "/admin" and method != "GET":
             return page("请通过客户管理页操作", status="405 Method Not Allowed", extra=[("Allow", "GET")])
         csrf = hmac.digest(password, b"wgvps-admin-form", "sha256").hex()
     try:
@@ -187,38 +156,61 @@ def application(env, start_response):
                         f'<script nonce="{nonce}">if(location.hash){{document.querySelector("#code").value='
                         'location.hash.slice(1);history.replaceState(null,"","/")}</script>')
         if method == "GET":
-            directory = customer_directory(json.loads(manager("status")), env.get("QUERY_STRING", ""), csrf, path)
             links = []
-            for url, title in (("/admin", "客户管理"), ("/admin/status", "连接状态")):
+            for url, title in views.PAGES.items():
                 current = ' aria-current="page"' if path == url else ""
                 links.append(f'<a href="{url}"{current}>{title}</a>')
             nav = '<header><nav aria-label="主导航"><strong>WireGuard</strong>' + "".join(links) + '</nav></header>'
-            if path == "/admin/status":
-                return page("连接状态", directory, navigation=nav)
-            hidden = f'<input type="hidden" name="csrf" value="{csrf}">'
-            return page("客户管理", f'<div class="tools"><form method="post">{hidden}'
-                        '<label>新增客户名称<input name="label" required maxlength="40"></label>'
-                        '<button name="action" value="add">新增客户</button></form>'
-                        f'<form method="post">{hidden}<button name="action" value="archive">下载全部配置 ZIP</button>'
-                        '</form></div>' + directory, navigation=nav)
+            if path == "/admin/logs":
+                records = json.loads(manager("audit"))
+                rows = []
+                for entry in records:
+                    values = (views.timestamp(entry["time"]), entry["source"], entry["action"],
+                              "、".join(entry["targets"]), "、".join(entry["labels"]),entry["result"],entry["reason"])
+                    rows.append("<tr>"+"".join(f"<td>{escape(v)}</td>" for v in values)+"</tr>")
+                directory = views.table(["时间","来源","操作","编号","名称","结果","原因"],rows)
+            else:
+                directory = views.directory(read_snapshot(env.get("HTTP_X_WGVPS_VIEW") == "browse"),
+                                            env.get("QUERY_STRING",""), csrf, path)
+            if env.get("HTTP_X_WGVPS_VIEW") in ("browse","fresh"):
+                return page(views.PAGES[path], f'<div id="workspace">{directory}</div>')
+            body = (f'<p id="feedback" role="status"></p><div id="workspace">{directory}</div>'
+                    f'<script nonce="{nonce}">{ADMIN_JS}</script>')
+            return page(views.PAGES[path],body,navigation=nav)
         if method != "POST":
             return page("请求方式错误", status="405 Method Not Allowed")
         size = int(env.get("CONTENT_LENGTH") or 0)
-        if not 0 < size <= 1024 or env.get("CONTENT_TYPE", "").split(";")[0] != "application/x-www-form-urlencoded":
+        if not 0 < size <= (16384 if admin else 512) or env.get("CONTENT_TYPE", "").split(";")[0] != "application/x-www-form-urlencoded":
             return page("表单无效", status="400 Bad Request")
-        fields = parse_qs(env["wsgi.input"].read(size).decode("ascii"), max_num_fields=4)
+        fields = parse_qs(env["wsgi.input"].read(size).decode("ascii"), max_num_fields=6)
         if admin:
             if (not hmac.compare_digest(fields.get("csrf", [""])[0].encode(), csrf.encode())
                     or env.get("HTTP_ORIGIN", origin) != origin):
                 return page("请重新打开管理页", status="403 Forbidden")
             user, action = fields.get("user", [""])[0], fields.get("action", [""])[0]
             back = '<p><a href="/admin">返回客户管理</a></p>'
+            group = fields.get("group",[""])[0]
+            label = fields.get("label",[""])[0]
             if action == "add":
-                label = fields.get("label", [""])[0]
-                created = manager("add", data=label.encode()).decode().strip()
-                return page(f"已新增 {escape(label)}（{escape(created)}）", back)
-            if action == "archive":
-                bundles = json.loads(manager("bundles"))
+                if group:
+                    created = manager("add-group", data=json.dumps(dict(label=label,group=group)).encode())
+                else:
+                    created = manager("add",data=label.encode())
+                name = escape(created.decode().strip())
+                return page(f"已新增 {escape(label)}（{name}）",f'<a data-created="{name}" href="/admin?customer={name}">管理新客户</a>'+back)
+            if action in ("group-create","group-rename","group-delete"):
+                manager(action,data=json.dumps(dict(group=group,label=label)).encode())
+                return page("分组已更新",'<a href="/admin/groups">返回分组管理</a>')
+            if action in ("assign","batch-group","batch-disable","batch-enable","batch-export"):
+                ids = [user] if action=="assign" else fields.get("ids",[""])[0].split(",")
+                if len(ids)>253 or not all(re.fullmatch(r"user[0-9]{2,16}",k) for k in ids):
+                    return page("请选择有效客户",back,"400 Bad Request")
+                data=json.dumps(dict(ids=ids,group=group)).encode()
+                result=json.loads(manager("batch-group" if action=="assign" else action,data=data))
+                if action!="batch-export":
+                    return page(f'已处理 {result["count"]} 个客户','<p class="result">'+escape("；".join(result["errors"]))+'</p>'+back)
+            if action in ("archive","batch-export"):
+                bundles = result if action=="batch-export" else json.loads(manager("bundles"))
                 if not bundles:
                     return page("没有已启用的用户", '<a href="/admin">返回用户管理</a>')
                 stream = io.BytesIO()
@@ -228,7 +220,7 @@ def application(env, start_response):
                         for mode, config in item["profiles"].items():
                             archive.writestr(f"{name}/{name}-{mode}.conf", config)
                 payload = stream.getvalue()
-                return attachment(payload, "wireguard-users.zip", "application/zip")
+                return attachment(payload, "wireguard-selected.zip" if action=="batch-export" else "wireguard-users.zip", "application/zip")
             if not re.fullmatch(r"user[0-9]{2,}", user) or action not in (
                     "issue", "enable", "disable", "bundle", "confirm-rotate", "rotate",
                     "download-global", "download-proxy", "rename", "confirm-delete", "delete"):

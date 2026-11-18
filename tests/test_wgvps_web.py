@@ -40,8 +40,8 @@ class Portal(unittest.TestCase):
         return int(status[0][:3]), payload if binary else payload.decode()
 
     def directory(self, name, label=None):
-        return json.dumps([dict(name=name, label=label or name, address="10.66.77.2",
-                                status="online", age=30)]).encode()
+        return json.dumps(dict(rows=[dict(name=name, label=label or name, address="10.66.77.2",
+                                enabled=True, status="online", age=30)],groups={},time=1000,window=180)).encode()
 
     def test_access(self):
         with patch.object(web, "manager") as manager:
@@ -109,7 +109,7 @@ class Portal(unittest.TestCase):
     def test_manage_customers(self):
         with patch.object(web, "manager", return_value=self.directory("user100", "上海 办公室")) as mgr:
             _, html = self.request("/admin", admin=True)
-            self.assertIn("上海 办公室（user100）", html)
+            self.assertIn("<td>上海 办公室</td>", html)
             csrf = re.search(r'name="csrf" value="([0-9a-f]+)"', html)[1]
             form = {"action": "add", "csrf": csrf, "label": "北京"}
             mgr.return_value = b"user101"
@@ -131,12 +131,12 @@ class Portal(unittest.TestCase):
             for query in ("q=OFFICE", "q=100", "q=77.2", "status=online"):
                 status, html = self.request("/admin", admin=True, QUERY_STRING=query)
                 self.assertEqual(status, 200)
-                self.assertIn('name="user" value="user100"', html)
+                self.assertIn('class="pick" type="checkbox" value="user100"', html)
                 self.assertIn("30 秒前", html)
             _, html = self.request("/admin", admin=True, QUERY_STRING="q=Office&status=disabled")
-            self.assertIn("没有匹配的客户", html)
+            self.assertIn("没有匹配的记录", html)
             self.assertNotIn('name="user" value="user100"', html)
-            mgr.assert_called_with("status")
+            mgr.assert_called_with("snapshot")
 
     def test_status_table_and_management_link(self):
         with patch.object(web, "manager", return_value=self.directory("user100", "上海办公室")) as mgr:
@@ -145,12 +145,45 @@ class Portal(unittest.TestCase):
             mgr.assert_not_called()
             code, html = self.request("/admin/status", admin=True)
             self.assertEqual(code, 200)
-            self.assertIn('<table aria-label="客户连接状态">', html)
-            self.assertIn('href="/admin?customer=user100#user100"', html)
+            self.assertIn("<table>", html)
+            self.assertIn('href="/admin/status?customer=user100"', html)
             self.assertNotIn('method="post"', html)
             _, filtered = self.request("/admin/status", admin=True, QUERY_STRING="status=offline")
-            self.assertIn("没有匹配的客户", filtered)
-            self.assertNotIn("上海办公室", filtered)
+            self.assertIn("没有匹配的记录", filtered)
+            self.assertNotIn("<td>上海办公室</td>", filtered)
             _, admin = self.request("/admin", admin=True, QUERY_STRING="customer=user100")
-            self.assertIn('id="user100"><details open>', admin)
+            self.assertIn('<aside class="drawer"', admin)
             self.assertIn('value="bundle"', admin)
+
+    def test_page_sort_filter_and_group_counts(self):
+        data=json.loads(self.directory("user01"))
+        data["groups"]={"abc":"上海"}
+        data["rows"]=[dict(data["rows"][0],name=f"user{i:02}",label=f"设备{i}",group="abc" if i%2 else "",
+                           address=f"10.66.77.{i+1}",rx=100*i) for i in range(1,66)]
+        with patch.object(web,"manager",return_value=json.dumps(data).encode()):
+            _,html=self.request("/admin",admin=True,QUERY_STRING="q=上海&enabled=yes&status=online&sort=rx&dir=desc&page=2")
+            self.assertIn("第 2 / 2 页",html)
+            self.assertIn("<td>user25</td>",html)
+            self.assertNotIn("<td>user65</td>",html)
+            self.assertNotIn("<td>user24</td>",html)
+            _,html=self.request("/admin",admin=True,QUERY_STRING="size=50&group=")
+            self.assertIn("匹配 32 人",html)
+            _,html=self.request("/admin/groups",admin=True)
+            self.assertIn("<td>上海</td><td>33</td><td>33</td>",html)
+
+    def test_batch_authorization_and_zip(self):
+        import zipfile
+        with patch.object(web,"manager",return_value=self.directory("user01")) as mgr:
+            _,html=self.request("/admin",admin=True)
+            csrf=re.search(r'name="csrf" value="([0-9a-f]+)"',html)[1]
+            form=dict(action="batch-export",ids="user01",csrf=csrf)
+            mgr.reset_mock()
+            self.assertEqual(self.request("/admin",form)[0],401)
+            self.assertEqual(self.request("/admin",form,admin=True,HTTP_ORIGIN="null")[0],403)
+            self.assertEqual(self.request("/admin",dict(form,ids="user01/../"),admin=True)[0],400)
+            mgr.assert_not_called()
+            mgr.return_value=json.dumps([{"name":"user01","profiles":{"global":"selected"}}]).encode()
+            code,data=self.request("/admin",form,admin=True,binary=True)
+            self.assertEqual(code,200)
+            self.assertEqual(zipfile.ZipFile(io.BytesIO(data)).namelist(),["user01/user01-global.conf"])
+            self.assertEqual(json.loads(mgr.call_args.kwargs["data"])["ids"],["user01"])
