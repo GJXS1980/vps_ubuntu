@@ -1,0 +1,18 @@
+[Unit]
+Description=SOCKS5 proxy for WireGuard users
+After=wg-quick@wgvps.service
+BindsTo=wg-quick@wgvps.service
+PartOf=wg-quick@wgvps.service
+
+[Service]
+DynamicUser=yes
+ExecStartPre=+/usr/sbin/iptables -w -I INPUT 1 ! -i wgvps -d 10.66.77.1 -p tcp --dport 1080 -m comment --comment wgvps-proxy -j DROP
+ExecStartPre=+/usr/sbin/iptables -w -I INPUT 1 -i wgvps -s 10.66.77.0/24 -d 10.66.77.1 -p tcp --dport 1080 -m comment --comment wgvps-proxy -j ACCEPT
+ExecStart=/usr/bin/microsocks -i 10.66.77.1 -p 1080
+ExecStopPost=-+/usr/sbin/iptables -w -D INPUT -i wgvps -s 10.66.77.0/24 -d 10.66.77.1 -p tcp --dport 1080 -m comment --comment wgvps-proxy -j ACCEPT
+ExecStopPost=-+/usr/sbin/iptables -w -D INPUT ! -i wgvps -d 10.66.77.1 -p tcp --dport 1080 -m comment --comment wgvps-proxy -j DROP
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=wg-quick@wgvps.service

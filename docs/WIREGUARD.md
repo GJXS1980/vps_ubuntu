@@ -1,58 +1,65 @@
-# Windows 全隧道 VPN
+# WireGuard 用户管理（Ubuntu 22.04）
 
-适用于 Ubuntu 22.04 VPS 与 Windows 官方 WireGuard 客户端。与 SSH SOCKS 不同，虚拟网卡可承载 TCP/UDP，不要求每个应用配置代理。使用单 peer 的 `AllowedIPs = 0.0.0.0/0, ::/0` 与配置中的 DNS，保留官方 Windows 客户端的阻止隧道外流量设置。隧道服务本身、回环与必要网络维护流量存在官方例外；不应将其描述为每一个网络包都走 VPN。
-
-## 安装
-
-先将更新后的 `bin/wireguard-install.sh` 上传到 VPS 项目目录，再执行：
+安装或升级时，把同一版本的 `bin/` 和 `systemd/` 一起上传到 VPS。安装器使用 Ubuntu 软件源中的 wireguard、qrencode 和 microsocks（需启用 universe）。在云防火墙放行入站 UDP 51820，SOCKS5 端口只供隧道内使用。
 
 ```bash
 cd ~/vps_ubuntu
-sudo bash bin/wireguard-install.sh 167.179.99.196
+sudo bash bin/wireguard-install.sh 你的VPS公网IPv4
+sudo wgvps-users list
 ```
 
-脚本创建 `wgvps` 接口、UDP 51820、独立配置和带 `wgvps` 注释的 INPUT/FORWARD/NAT 规则。新增 IPv4/IPv6 转发与 IPv6 RA 设置保存在 `/etc/sysctl.d/90-ssr-wireguard.conf`，原运行值记录在 `/etc/wireguard/wgvps-forwarding-before.txt`。现有 SSR unit 和账号不修改。不要重复安装或同时在多台设备上使用同一份客户端密钥。
+安装后有 25 个已启用的用户（user01 至 user25），默认全局模式。每个用户有独立的 IPv4、IPv6、密钥对和预共享密钥。一份配置分配给一台同时在线的设备。旧版安装请填原 Endpoint；安装器校验原来的单 peer 与客户端是否匹配，并将其保留为 user01，原设备可继续连接。重复安装会保留已有用户状态。
 
-脚本不会修改 Vultr 云防火墙：在关联的云防火墙规则中允许入站 UDP 51820。现有防火墙中的其他规则不清空，但新增的转发允许规则会插入前部。若使用其他 nftables 基础链、策略路由或防火墙重载，仍需检查冲突；重载防火墙后可重启 `wg-quick@wgvps` 恢复自有规则。此 VPN 转发不受 SSR 管理器的 ssr UID 出口封禁规则约束。
+## 分发配置
 
-在 Windows PowerShell 下载客户端配置：
-
-```powershell
-scp root@167.179.99.196:/etc/wireguard/windows-vps.conf "$env:USERPROFILE\Downloads\windows-vps.conf"
-```
-
-从 https://www.wireguard.com/install/ 安装 Windows 官方客户端，选择“从文件导入隧道”，选择下载的文件。先关闭 SSR 的系统代理、浏览器自定义代理和其他 VPN，再激活 WireGuard，避免代理套代理。配置含客户端私钥和预共享密钥，不要贴到聊天或公开存储。
-
-## IPv6 与性能
-
-IPv4 和 IPv6 都路由至隧道。服务器使用 IPv4 NAT 和 IPv6 NAT66；只有 VPS 有可用的 IPv6 出口，IPv6 网站才可通过隧道访问。没有 IPv6 出口时保留 `::/0` 阻止本地 IPv6 绕行，IPv4 TCP/UDP 仍可使用。隧道不能改善物理线路的基础 RTT，也不保证一定比 SSR/SSH 快；其 UDP 端口须能从客户端网络访问。
-
-MTU 初始值为 1380。如果只有部分网站卡住或出现大包问题，需要在确认路径 MTU 后进一步调整，不能仅凭延迟就认定 MTU 有误。
-
-## 验证与停止
-
-客户端激活后，在 VPS 检查握手和双向字节数：
+手机在 WireGuard 中选择扫码添加，管理员在私密终端显示对应用户的二维码：
 
 ```bash
-sudo wg show wgvps
+sudo wgvps-users qr user02
 ```
 
-在 Windows 检查出口（绕过旧的 HTTP/SOCKS 代理设置）：
-
-```powershell
-curl.exe --% -q --noproxy "*" --connect-timeout 10 --max-time 20 https://www.cloudflare.com/cdn-cgi/trace
-```
-
-应看到 `ip=167.179.99.196`。该测试只能验证出口，不代替全部 UDP 应用验收。可使用 `Resolve-DnsName example.com -Server 1.1.1.1 -DnsOnly` 测试 DNS，并观察 `wg show` 的收发计数；握手正常但打不开网页时检查转发/NAT、MTU 和防火墙。未握手先检查客户端日志、UDP 51820 放行、Endpoint 和密钥是否匹配。
-
-停止客户端：在 Windows WireGuard 中停用隧道，恢复普通直连。服务器停止并取消开机启动：
+Windows 或其他桌面端可导入配置文件。在 VPS 上用以下命令导出到当前用户的私有目录，再用 SFTP 或 SCP 单独发给对应使用者。二维码和文件都含有该用户的完整凭据。
 
 ```bash
-sudo systemctl disable --now wg-quick@wgvps
+install -d -m 700 ~/wg-exports
+(umask 077 && sudo wgvps-users export user02 > ~/wg-exports/user02.conf)
 ```
 
-正常停止会执行 PostDown 删除对应规则，不删除账号或密钥。系统转发设置为全局共享状态，停止服务不会擅自恢复这些值；若要移除转发持久配置，应先确认其他 VPN/容器不依赖它，再参考记录的原值恢复。安装失败不要删除现有 SSR 或盲目重跑；检查 `journalctl -u wg-quick@wgvps --no-pager`。启动钩子中途失败可能留下部分自有规则，应仅检查/移除带 wgvps 注释的规则。
+## 全局与代理模式
 
-本次只完成安装脚本静态检查，尚未在该 VPS 完成 WireGuard 握手、UDP 与吞吐验收。
+| 模式 | 客户端行为 | 应用设置 |
+|---|---|---|
+| global | IPv4 和 IPv6 默认路由进隧道，配置 DNS 为 1.1.1.1 和 1.0.0.1 | 使用系统网络，关闭原应用代理 |
+| proxy | 仅 10.66.77.1/32 走隧道，保留本地默认路由和 DNS | 指定应用使用 SOCKS5 地址 10.66.77.1、端口 1080，按需开启代理端域名解析 |
 
-参考：https://www.wireguard.com/quickstart/ 、https://ubuntu.com/server/docs/how-to/wireguard-vpn/vpn-as-the-default-gateway/ 、https://git.zx2c4.com/wireguard-windows/about/docs/netquirk.md 。
+```bash
+sudo wgvps-users mode user02 proxy
+sudo wgvps-users qr user02
+# 切回全局
+sudo wgvps-users mode user02 global
+```
+
+每次切换后，重新导出或扫码，在设备上替换旧配置并激活。模式是客户端的路由选择，不限制用户自行修改客户端配置。代理服务提供 TCP CONNECT；需要 UDP 应用经过 VPS 时选全局。全局模式需要 VPS 有 IPv6 出口才能访问 IPv6 站点。
+
+## 禁用、恢复与密钥轮换
+
+```bash
+sudo wgvps-users disable user02
+sudo wgvps-users enable user02
+sudo wgvps-users rotate user02
+sudo wgvps-users qr user02
+```
+
+禁用会将该 peer 从服务端持久配置与运行中的接口移除。恢复后原配置可继续使用。轮换会替换该用户的密钥对和预共享密钥，保留地址、模式及启用状态；重新分发后旧配置失效。已禁用的账号可以轮换，启用后才能导出。所有用户变更通过管理命令执行。
+
+## 验收与运维
+
+1. 在 VPS 执行 `sudo wg show wgvps`，检查已启用用户数、最近握手及收发计数。使用两台设备分别导入两个用户配置。
+2. 全局模式下，在客户端运行 `curl --noproxy "*" -4 https://api.ipify.org`，应显示 VPS 出口 IPv4。Windows PowerShell 请使用 `curl.exe`。
+3. 代理模式下，前一条命令应显示客户端网络出口。运行 `curl --noproxy "" --proxy socks5h://10.66.77.1:1080 https://api.ipify.org` 应显示 VPS 出口。检查服务可用 `systemctl status wgvps-proxy`。
+4. 禁用一个用户，验证其流量停止，另一台仍可访问。轮换后验证旧配置无法握手，新配置可连接。重启服务器后再核对禁用状态与模式。
+5. 同步失败时检查报错和 `sudo journalctl -u wg-quick@wgvps -u wgvps-proxy`。修复原因后运行 `sudo wgvps-users list`，它会先重试未完成的变更。
+
+私钥及用户状态保存在 root 专用的 `/etc/wireguard/`。原客户端路径 `windows-vps.conf` 跟随 user01 更新，禁用时移除。独立导出的文件需自行保管。服务器 MTU 为 1380，使用带 wgvps 标记的 IPv4/IPv6 转发与 NAT 规则。原转发参数记录在 `wgvps-forwarding-before.txt`，持久化在 `/etc/sysctl.d/90-ssr-wireguard.conf`。
+
+停止并取消开机启动可运行 `sudo systemctl disable --now wgvps-proxy wg-quick@wgvps`。停止服务会释放对应防火墙规则，保留用户配置。恢复全局转发参数前，应确认其他服务是否依赖这些设置。

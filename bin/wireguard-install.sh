@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Standalone full-tunnel VPN; does not edit the SSR service or its accounts.
+# Ubuntu 22.04 WireGuard installation and single-peer migration.
 set -Eeuo pipefail
 [[ $EUID -eq 0 ]] || { echo '请使用 sudo/root'; exit 1; }
 . /etc/os-release
@@ -14,6 +14,34 @@ conf=/etc/wireguard/wgvps.conf
 client=/etc/wireguard/windows-vps.conf
 sysconf=/etc/sysctl.d/90-ssr-wireguard.conf
 backup=/etc/wireguard/wgvps-forwarding-before.txt
+src=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+manager=/usr/local/sbin/wgvps-users
+unit=wgvps-proxy.service
+[[ -f $src/wgvps-users.py && -f $src/../systemd/$unit ]] || { echo '请上传整个项目目录'; exit 1; }
+umask 077
+exec 9>/run/lock/wgvps-install.lock
+flock -x 9
+install_deps() {
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update
+  apt-get install -y wireguard iptables procps python3 qrencode microsocks
+}
+finish_install() {
+  install -m 0755 "$src/wgvps-users.py" "$manager"
+  "$manager" init "$endpoint"
+  install -m 0644 "$src/../systemd/$unit" "/etc/systemd/system/$unit"
+  systemctl daemon-reload
+  systemctl enable --now wg-quick@wgvps
+  systemctl enable --now "$unit"
+  systemctl is-active --quiet wg-quick@wgvps
+  systemctl is-active --quiet "$unit"
+  echo '25 个用户已就绪。运行 sudo wgvps-users list 查看，云防火墙需放行入站 UDP 51820。'
+}
+if [[ -f $conf && ( -f $client || -f /etc/wireguard/wgvps-users.json ) ]]; then
+  install_deps
+  finish_install
+  exit 0
+fi
 for file in "$conf" "$client" "$sysconf" "$backup"; do
   [[ ! -e $file && ! -L $file ]] || { echo "拒绝覆盖：$file"; exit 1; }
 done
@@ -25,12 +53,9 @@ if ip -4 route show | grep -qE '(^| )10\.66\.77\.'; then
 fi
 wan4=$(ip -4 route get 1.1.1.1 | awk '{for(i=1;i<=NF;i++) if($i=="dev") {print $(i+1);exit}}')
 wan6=$(ip -6 route show default | awk '{for(i=1;i<=NF;i++) if($i=="dev") {print $(i+1);exit}}')
-ipv6_available=1
-if [[ -z $wan6 ]]; then wan6=$wan4; ipv6_available=0; fi
+wan6=${wan6:-$wan4}
 [[ $wan4 =~ ^[A-Za-z0-9_.:-]+$ && $wan6 =~ ^[A-Za-z0-9_.:-]+$ ]] || { echo '无法确定出口网卡'; exit 1; }
-export DEBIAN_FRONTEND=noninteractive
-apt-get update
-apt-get install -y wireguard iptables procps
+install_deps
 modprobe wireguard
 # Fail before writing keys if this host cannot handle our IPv6 policy.
 ip6tables -w -t nat -L POSTROUTING -n >/dev/null
@@ -90,11 +115,4 @@ PersistentKeepalive = 25
 EOF
 chmod 0600 "$conf" "$client" "$backup"
 unset server_key client_key psk
-systemctl enable --now wg-quick@wgvps
-systemctl is-active --quiet wg-quick@wgvps
-echo 'WireGuard 已启动；请在 Vultr 防火墙放行入站 UDP 51820。'
-echo "Windows 客户端配置：$client（含私钥，请勿发送给他人）"
-if [[ $ipv6_available == 0 ]]; then
-  echo '未检测到 VPS IPv6 默认路由：IPv4 TCP/UDP 可用，IPv6 进入隧道后可能不可用，不会从客户端本地绕行。'
-fi
-echo 'Windows 导入配置并激活后，用 sudo wg show wgvps 检查握手。'
+finish_install
