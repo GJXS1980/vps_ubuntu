@@ -15,12 +15,36 @@ from urllib.parse import parse_qs
 
 MANAGER = "/usr/local/sbin/wgvps-users"
 STYLE = """
-*{box-sizing:border-box}body{margin:0;background:#f3f6f7;color:#182a31;font:16px/1.55 system-ui,sans-serif}
-main{max-width:760px;margin:auto;padding:5vh 20px}h1{font-size:clamp(26px,5vw,38px);line-height:1.15}
-section,form{background:white;border:1px solid #cfdbdf;padding:18px;border-radius:10px;margin:16px 0}
-label{display:block;margin-bottom:8px}input,select,button,a.download{font:inherit;padding:8px 12px;border-radius:5px}
-input,select{border:1px solid #8c9da4;max-width:100%}input{width:100%}button,a.download{border:0;background:#145a64;color:white;cursor:pointer;margin:6px 4px 0 0}a.download{display:inline-block;text-decoration:none}
-img{display:block;max-width:100%;height:auto}summary{cursor:pointer;margin-top:12px}a{color:#145a64}
+*{box-sizing:border-box}
+:root{color-scheme:light;--ink:#182b3d;--muted:#526777;--line:#d6e0e5;--accent:#006963}
+body{margin:0;background:#f3f6f8;color:var(--ink);font:16px/1.55 "Inter","Segoe UI","Microsoft YaHei",sans-serif}
+header{background:#143748;color:white}nav,main{max-width:1040px;margin:auto;padding:0 24px}
+nav{display:flex;align-items:center;gap:20px;min-height:60px}nav strong{letter-spacing:.02em;margin-right:auto}
+nav a{color:#dfebee;text-decoration:none;padding:18px 3px 14px;border-bottom:4px solid transparent}
+nav a[aria-current=page]{color:white;border-color:#67ddbd}main{padding-top:24px;padding-bottom:48px}
+h1{font-size:clamp(26px,4vw,36px);letter-spacing:-.03em;margin:0 0 18px}h2{font-size:20px}
+section,form,.sheet{background:white;border:1px solid var(--line);padding:16px;border-radius:10px;margin:10px 0}
+section form,details form{border:0;margin:0;padding:12px 0 0}
+label{display:block;font-weight:600;font-size:.9rem}input,select,button,a.download{font:inherit;border-radius:6px;padding:8px 12px}
+input,select{border:1px solid #a8bac2;background:white;color:var(--ink);max-width:100%}input{width:100%}
+button,a.download{background:var(--accent);color:white;border:0;cursor:pointer;margin:4px 4px 4px 0}
+button:hover,a.download:hover{background:#00544f}a.download{display:inline-block;text-decoration:none}
+a,summary{color:var(--accent)}summary{cursor:pointer}img{display:block;max-width:100%;height:auto}
+:focus-visible{outline:3px solid #007abc;outline-offset:2px}
+.tools,.filters{display:flex;align-items:end;gap:12px;flex-wrap:wrap}.tools form{margin:0}.tools form:first-child{flex:1}
+.tools form,.filters{display:flex;align-items:end;gap:10px;flex-wrap:wrap}.tools label,.filters label:first-child{flex:1;min-width:140px}
+.filters label input,.filters label select,.tools input{display:block;margin-top:4px}.filters button,.tools button{margin:0}
+.stats{display:flex;gap:24px;flex-wrap:wrap;color:var(--muted);margin:20px 0 12px}.stats b{font:700 1.4rem/1.2 "Segoe UI",sans-serif;color:var(--ink);margin-left:6px}
+.hint,small{color:var(--muted);font-size:.9rem}small{display:block}
+.sheet{padding:0;overflow-x:auto}table{width:100%;border-collapse:collapse;text-align:left}
+th,td{padding:12px 16px;border-bottom:1px solid var(--line)}th{font-size:.85rem;background:#eaf0f3;color:#415565}
+tbody tr:last-child td{border:0}tbody tr:hover{background:#f5faf9}.ip{font-variant-numeric:tabular-nums;white-space:nowrap}
+.pill{display:inline-block;white-space:nowrap;border-radius:20px;background:#edf1f4;color:#475866;padding:2px 9px;font-size:.85rem}
+.online{background:#d8f3e7;color:#146048}.unknown{background:#fff0cf;color:#74540e}.disabled{background:#f1e9ee;color:#67465b}
+.client summary{font-weight:600}.client .pill{margin-left:8px}.client form label{margin-top:10px}
+@media(max-width:640px){nav,main{padding-left:12px;padding-right:12px}nav{gap:12px}.tools{align-items:stretch}
+.tools form:first-child{flex-basis:100%}.stats{gap:14px}.sheet table{min-width:560px}.filters{gap:8px}
+.filters label:first-child{flex-basis:100%}th,td{padding:10px}.client summary{overflow-wrap:anywhere}}
 """
 
 
@@ -57,18 +81,20 @@ CONNECTION = {"online": "在线", "offline": "离线", "never": "尚无握手",
               "unknown": "状态未知", "disabled": "已禁用"}
 
 
-def customer_directory(rows, query, csrf):
+def customer_directory(rows, query, csrf, path):
+    status_page = path == "/admin/status"
     filters = parse_qs(query, max_num_fields=8)
     term = filters.get("q", [""])[0].strip()
     selected = filters.get("status", [""])[0]
+    focus = filters.get("customer", [""])[0]
     options = ['<option value="">全部状态</option>']
     for key, title in CONNECTION.items():
         mark = " selected" if key == selected else ""
         options.append(f'<option value="{key}"{mark}>{title}</option>')
-    form = (f'<form method="get" action="/admin"><label for="q">客户名称、编号或隧道 IPv4</label>'
-            f'<input id="q" name="q" value="{escape(term)}"><label for="status">连接状态</label>'
-            f'<select name="status" id="status">{"".join(options)}</select>'
-            '<button>查询 / 刷新</button> <a href="/admin">清除筛选</a></form>')
+    form = (f'<form class="filters" method="get" action="{path}"><label>查找客户'
+            f'<input name="q" placeholder="名称、编号或 IPv4" value="{escape(term)}"></label>'
+            f'<label>连接状态<select name="status">{"".join(options)}</select></label>'
+            f'<button>查询 / 刷新</button><a href="{path}">重置</a></form>')
     cards = []
     hidden = f'<input type="hidden" name="csrf" value="{csrf}">'
     for row in rows:
@@ -82,31 +108,45 @@ def customer_directory(rows, query, csrf):
         caption = name if label == name else f"{escape(label)}（{name}）"
         age = row["age"]
         handshake = "—" if age is None else (f"{age} 秒前" if age < 60 else f"{age // 60} 分钟前")
+        pill = f'<span class="pill {status}">{CONNECTION[status]}</span>'
+        if status_page:
+            cards.append(f'<tr><td><strong>{escape(label)}</strong><small>{name}</small></td>'
+                         f'<td>{pill}</td><td class="ip">{escape(address)}</td><td>{handshake}</td>'
+                         f'<td><a href="/admin?customer={name}#{name}">管理</a></td></tr>')
+            continue
+        opened = " open" if name == focus else ""
         if status == "disabled":
             buttons = '<button name="action" value="enable">启用用户</button><button name="action" value="confirm-delete">删除已禁用客户…</button>'
         else:
             buttons = ('<button name="action" value="bundle">生成配置并分发</button>'
                        '<button name="action" value="issue">签发内网领取链接</button>'
                        '<button name="action" value="disable">禁用用户</button>')
-        cards.append(f'<section><strong>{caption}</strong> · {CONNECTION[status]}'
-                     f'<div>{escape(address)} · 最近握手：{handshake}</div><details><summary>管理客户</summary>'
+        cards.append(f'<section class="client" id="{name}"><details{opened}><summary>{caption} {pill}</summary>'
+                     f'<small>{escape(address)} · 最近握手：{handshake}</small>'
                      f'<form method="post" action="/admin">{hidden}<input type="hidden" name="user" value="{name}">'
                      f'{buttons}<button name="action" value="confirm-rotate">轮换密钥…</button>'
                      '<label>新名称<input name="label" maxlength="40"></label>'
                      '<button name="action" value="rename">保存名称</button></form></details></section>')
     total_online = sum(row["status"] == "online" for row in rows)
-    return (form + f'<p>共 {len(rows)} / 253 个客户，在线 {total_online} 个，本次匹配 {len(cards)} 个。</p>'
-            '<p>在线表示最近 3 分钟内有握手。点击“查询 / 刷新”更新状态。</p>'
-            + ("".join(cards) or "<p>没有匹配的客户。</p>"))
+    stats = (f'<div class="stats"><span>客户总数<b>{len(rows)}</b></span><span>在线<b>{total_online}</b></span>'
+             f'<span>匹配<b>{len(cards)}</b></span></div>')
+    if status_page:
+        headers = "".join(f'<th scope="col">{col}</th>' for col in ("客户 / 编号", "状态", "隧道 IPv4", "最近握手", "操作"))
+        body = "".join(cards) or '<tr><td colspan="5">没有匹配的客户。</td></tr>'
+        return (stats + form + '<p class="hint">最近 3 分钟内有握手记为在线。点击“查询 / 刷新”获取最新状态。</p>'
+                f'<div class="sheet" role="region" aria-label="客户连接状态" tabindex="0">'
+                f'<table aria-label="客户连接状态"><thead><tr>{headers}</tr></thead><tbody>{body}</tbody></table></div>')
+    return stats + form + ("".join(cards) or "<p>没有匹配的客户。</p>")
+
 
 
 def application(env, start_response):
     nonce = secrets.token_urlsafe(20)
 
-    def page(title, body="", status="200 OK", extra=()):
+    def page(title, body="", status="200 OK", extra=(), navigation=""):
         html = (f'<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" '
                 f'content="width=device-width,initial-scale=1"><title>{title}</title>'
-                f'<style nonce="{nonce}">{STYLE}</style><main><h1>{title}</h1>{body}</main></html>').encode()
+                f'<style nonce="{nonce}">{STYLE}</style>{navigation}<main><h1>{title}</h1>{body}</main></html>').encode()
         start_response(status, [("Content-Type", "text/html; charset=utf-8"), ("Cache-Control", "no-store"),
                                 ("Referrer-Policy", "same-origin"), ("X-Content-Type-Options", "nosniff"),
                                 ("Content-Security-Policy", "default-src 'none'; img-src data:; "
@@ -127,15 +167,17 @@ def application(env, start_response):
             or env.get("HTTP_HOST") != origin[8:]):
         return page("仅供指定内网访问", status="403 Forbidden")
     path, method = env["PATH_INFO"], env["REQUEST_METHOD"]
-    if path not in ("/", "/admin"):
+    if path not in ("/", "/admin", "/admin/status"):
         return page("页面不存在", status="404 Not Found")
-    admin = path == "/admin"
+    admin = path != "/"
     if admin:
         password = (Path(os.environ["CREDENTIALS_DIRECTORY"]) / "password").read_bytes().strip()
         auth = b"Basic " + base64.b64encode(b"admin:" + password)
         if not hmac.compare_digest(env.get("HTTP_AUTHORIZATION", "").encode(), auth):
             return page("需要管理员登录", status="401 Unauthorized",
                         extra=[("WWW-Authenticate", 'Basic realm="WireGuard Admin"')])
+        if path == "/admin/status" and method != "GET":
+            return page("请通过客户管理页操作", status="405 Method Not Allowed", extra=[("Allow", "GET")])
         csrf = hmac.digest(password, b"wgvps-admin-form", "sha256").hex()
     try:
         if method == "GET" and not admin:
@@ -145,14 +187,20 @@ def application(env, start_response):
                         f'<script nonce="{nonce}">if(location.hash){{document.querySelector("#code").value='
                         'location.hash.slice(1);history.replaceState(null,"","/")}</script>')
         if method == "GET":
-            directory = customer_directory(json.loads(manager("status")), env.get("QUERY_STRING", ""), csrf)
-            return page("WireGuard 配置管理",
-                        f'<form method="post"><input type="hidden" name="csrf" value="{csrf}">'
-                        '<label for="label">新增客户名称</label><input id="label" name="label" required maxlength="40">'
+            directory = customer_directory(json.loads(manager("status")), env.get("QUERY_STRING", ""), csrf, path)
+            links = []
+            for url, title in (("/admin", "客户管理"), ("/admin/status", "连接状态")):
+                current = ' aria-current="page"' if path == url else ""
+                links.append(f'<a href="{url}"{current}>{title}</a>')
+            nav = '<header><nav aria-label="主导航"><strong>WireGuard</strong>' + "".join(links) + '</nav></header>'
+            if path == "/admin/status":
+                return page("连接状态", directory, navigation=nav)
+            hidden = f'<input type="hidden" name="csrf" value="{csrf}">'
+            return page("客户管理", f'<div class="tools"><form method="post">{hidden}'
+                        '<label>新增客户名称<input name="label" required maxlength="40"></label>'
                         '<button name="action" value="add">新增客户</button></form>'
-                        f'<form method="post"><input type="hidden" name="csrf" value="{csrf}">'
-                        '<p>批量生成全部已启用用户的配置。压缩包按用户分目录，请只向每人发送其自己的文件。</p>'
-                        '<button name="action" value="archive">下载全部配置 ZIP</button></form>' + directory)
+                        f'<form method="post">{hidden}<button name="action" value="archive">下载全部配置 ZIP</button>'
+                        '</form></div>' + directory, navigation=nav)
         if method != "POST":
             return page("请求方式错误", status="405 Method Not Allowed")
         size = int(env.get("CONTENT_LENGTH") or 0)

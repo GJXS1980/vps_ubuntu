@@ -137,3 +137,20 @@ class Portal(unittest.TestCase):
             self.assertIn("没有匹配的客户", html)
             self.assertNotIn('name="user" value="user100"', html)
             mgr.assert_called_with("status")
+
+    def test_status_table_and_management_link(self):
+        with patch.object(web, "manager", return_value=self.directory("user100", "上海办公室")) as mgr:
+            self.assertEqual(self.request("/admin/status")[0], 401)
+            self.assertEqual(self.request("/admin/status", {"action": "delete"}, admin=True)[0], 405)
+            mgr.assert_not_called()
+            code, html = self.request("/admin/status", admin=True)
+            self.assertEqual(code, 200)
+            self.assertIn('<table aria-label="客户连接状态">', html)
+            self.assertIn('href="/admin?customer=user100#user100"', html)
+            self.assertNotIn('method="post"', html)
+            _, filtered = self.request("/admin/status", admin=True, QUERY_STRING="status=offline")
+            self.assertIn("没有匹配的客户", filtered)
+            self.assertNotIn("上海办公室", filtered)
+            _, admin = self.request("/admin", admin=True, QUERY_STRING="customer=user100")
+            self.assertIn('id="user100"><details open>', admin)
+            self.assertIn('value="bundle"', admin)
