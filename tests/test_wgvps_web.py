@@ -33,7 +33,10 @@ class Portal(unittest.TestCase):
             env["HTTP_AUTHORIZATION"] = "Basic " + base64.b64encode(b"admin:test-secret").decode()
         env.update(kwargs)
         status = []
-        payload = web.application(env, lambda s, headers: status.append(s))[0]
+        def start_response(code, headers):
+            status.append(code)
+            self.headers = dict(headers)
+        payload = web.application(env, start_response)[0]
         return int(status[0][:3]), payload if binary else payload.decode()
 
     def test_access(self):
@@ -71,15 +74,23 @@ class Portal(unittest.TestCase):
         with patch.object(web, "manager", return_value=b"user25 enabled global") as manager:
             _, html = self.request("/admin", admin=True)
             csrf = re.search(r'name="csrf" value="([0-9a-f]+)"', html)[1]
+            self.assertEqual(self.headers["Referrer-Policy"], "same-origin")
             form = {"csrf": csrf, "action": "bundle", "user": "user25"}
             manager.return_value = json.dumps(bundle).encode()
             with patch.object(web.subprocess, "run") as qr:
                 qr.return_value.stdout = b"png"
                 status, html = self.request("/admin", form, admin=True)
             self.assertEqual(status, 200)
-            self.assertIn('download="user25-global.conf"', html)
-            self.assertIn('download="user25-proxy.conf"', html)
-            manager.assert_called_with("bundle", "user25")
+            for mode, config in bundle["profiles"].items():
+                self.assertIn(f'value="download-{mode}"', html)
+                form["action"] = f"download-{mode}"
+                self.assertEqual(self.request("/admin", form, admin=True, HTTP_ORIGIN="null")[0], 403)
+                status, payload = self.request("/admin", form, admin=True, binary=True,
+                                               HTTP_ORIGIN="https://10.0.0.1:8443")
+                self.assertEqual(status, 200)
+                self.assertEqual(payload, config.encode())
+                self.assertEqual(self.headers["Content-Disposition"], f'attachment; filename="user25-{mode}.conf"')
+                manager.assert_called_with("bundle", "user25")
             form = {"csrf": csrf, "action": "archive"}
             self.assertEqual(self.request("/admin", form)[0], 401)
             self.assertEqual(self.request("/admin", form, admin=True, HTTP_ORIGIN="https://other")[0], 403)

@@ -29,18 +29,24 @@ def manager(*args, data=b""):
                           capture_output=True, timeout=20, check=True).stdout
 
 
-def profiles(bundle):
+def profiles(bundle, csrf=None):
     name = bundle["name"]
     cards = []
     for mode, title in (("global", "全局模式"), ("proxy", "代理模式")):
         config = bundle["profiles"][mode].encode()
         png = subprocess.run(["/usr/bin/qrencode", "-t", "PNG", "-o", "-"], input=config,
                              capture_output=True, timeout=5, check=True).stdout
-        content = base64.b64encode(config).decode()
         image = base64.b64encode(png).decode()
         filename = f"{name}-{mode}.conf"
-        cards.append(f'<section><h2>{title}</h2><a class="download" download="{filename}" '
-                     f'href="data:application/octet-stream;base64,{content}">下载 {filename}</a>'
+        if csrf is None:
+            content = base64.b64encode(config).decode()
+            download = (f'<a class="download" download="{filename}" '
+                        f'href="data:application/octet-stream;base64,{content}">下载 {filename}</a>')
+        else:
+            download = (f'<form method="post" action="/admin"><input type="hidden" name="csrf" value="{csrf}">'
+                        f'<input type="hidden" name="user" value="{name}">'
+                        f'<button name="action" value="download-{mode}">下载 {filename}</button></form>')
+        cards.append(f'<section><h2>{title}</h2>{download}'
                      f'<details><summary>显示导入二维码</summary><img src="data:image/png;base64,{image}" '
                      f'alt="{title}配置二维码"></details></section>')
     return ("<p>请在离开页面前保存两份配置。导入同一台设备，先停用当前隧道，再启用另一份。"
@@ -55,12 +61,19 @@ def application(env, start_response):
                 f'content="width=device-width,initial-scale=1"><title>{title}</title>'
                 f'<style nonce="{nonce}">{STYLE}</style><main><h1>{title}</h1>{body}</main></html>').encode()
         start_response(status, [("Content-Type", "text/html; charset=utf-8"), ("Cache-Control", "no-store"),
-                                ("Referrer-Policy", "no-referrer"), ("X-Content-Type-Options", "nosniff"),
+                                ("Referrer-Policy", "same-origin"), ("X-Content-Type-Options", "nosniff"),
                                 ("Content-Security-Policy", "default-src 'none'; img-src data:; "
                                  f"style-src 'nonce-{nonce}'; script-src 'nonce-{nonce}'; "
                                  "form-action 'self'; frame-ancestors 'none'; base-uri 'none'"),
                                 ("Content-Length", str(len(html))), *extra])
         return [html]
+
+    def attachment(payload, filename, content_type):
+        start_response("200 OK", [("Content-Type", content_type),
+                       ("Content-Disposition", f'attachment; filename="{filename}"'),
+                       ("Cache-Control", "no-store"), ("X-Content-Type-Options", "nosniff"),
+                       ("Content-Length", str(len(payload)))])
+        return [payload]
 
     origin = "https://" + os.environ["WEB_ADDRESS"] + ":8443"
     if (ipaddress.ip_address(env["REMOTE_ADDR"]) not in ipaddress.ip_network(os.environ["WEB_NETWORK"])
@@ -124,14 +137,15 @@ def application(env, start_response):
                         for mode, config in item["profiles"].items():
                             archive.writestr(f"{name}/{name}-{mode}.conf", config)
                 payload = stream.getvalue()
-                start_response("200 OK", [("Content-Type", "application/zip"),
-                               ("Content-Disposition", 'attachment; filename="wireguard-users.zip"'),
-                               ("Cache-Control", "no-store"), ("X-Content-Type-Options", "nosniff"),
-                               ("Content-Length", str(len(payload)))])
-                return [payload]
+                return attachment(payload, "wireguard-users.zip", "application/zip")
             if not re.fullmatch(r"user(0[1-9]|1[0-9]|2[0-5])", user) or action not in (
-                    "issue", "enable", "disable", "bundle", "confirm-rotate", "rotate"):
+                    "issue", "enable", "disable", "bundle", "confirm-rotate", "rotate",
+                    "download-global", "download-proxy"):
                 return page("用户或操作无效", status="400 Bad Request")
+            if action.startswith("download-"):
+                mode = action.removeprefix("download-")
+                payload = json.loads(manager("bundle", user))["profiles"][mode].encode()
+                return attachment(payload, f"{user}-{mode}.conf", "application/octet-stream")
             back = '<p><a href="/admin">返回用户管理</a></p>'
             if action == "confirm-rotate":
                 return page(f"轮换 {user} 的密钥？", '<p>旧配置会立即失效，轮换后请重新生成并分发两份配置。</p>'
@@ -140,7 +154,7 @@ def application(env, start_response):
                             '<button name="action" value="rotate">确认轮换密钥</button></form>' + back)
             result = manager(action, user).decode().strip()
             if action == "bundle":
-                return page(f"分发 {user} 的配置", profiles(json.loads(result)) + back)
+                return page(f"分发 {user} 的配置", profiles(json.loads(result), csrf) + back)
             if action == "rotate":
                 return page(f"{user} 密钥已轮换", back)
             if action == "issue":
