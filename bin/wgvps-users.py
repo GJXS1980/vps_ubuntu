@@ -109,6 +109,11 @@ def profile(state, name, mode=None):
             f"AllowedIPs = {routes}\nPersistentKeepalive = 25\n")
 
 
+def bundle(state, name):
+    return {"name": name, "profiles": {mode: profile(state, name, mode)
+                                       for mode in ("global", "proxy")}}
+
+
 def reconcile(state):
     # Leave PENDING in place until both persistent and live state agree.
     atomic(CONF, server_config(state))
@@ -138,6 +143,10 @@ def manage(args):
             for name, user in state["users"].items():
                 print(name, "enabled" if user["enabled"] else "disabled", user["mode"])
             return
+        if args.command == "bundles":
+            print(json.dumps([bundle(state, name) for name, user in state["users"].items()
+                              if user["enabled"]]))
+            return
         if args.command == "redeem":
             token = sys.stdin.readline(128).strip()
             digest = hashlib.sha256(token.encode()).hexdigest()
@@ -145,16 +154,18 @@ def manage(args):
                 ticket = user.get("ticket")
                 if (user["enabled"] and ticket and ticket["expires"] > time.time()
                         and hmac.compare_digest(digest, ticket["digest"])):
-                    profiles = {mode: profile(state, name, mode) for mode in ("global", "proxy")}
                     del user["ticket"]
                     atomic(STATE, json.dumps(state))
-                    print(json.dumps({"name": name, "profiles": profiles}))
+                    print(json.dumps(bundle(state, name)))
                     return
             raise ValueError("领取码无效、已用或已过期")
         user = state["users"][args.user]
+        if args.command in ("issue", "bundle", "export", "qr") and not user["enabled"]:
+            raise ValueError("该用户已禁用")
+        if args.command == "bundle":
+            print(json.dumps(bundle(state, args.user)))
+            return
         if args.command == "issue":
-            if not user["enabled"]:
-                raise ValueError("该用户已禁用")
             token = secrets.token_urlsafe(24)
             user["ticket"] = {"digest": hashlib.sha256(token.encode()).hexdigest(),
                               "expires": int(time.time()) + 600}
@@ -162,8 +173,6 @@ def manage(args):
             print(token)
             return
         if args.command in ("export", "qr"):
-            if not user["enabled"]:
-                raise ValueError("该用户已禁用")
             config = profile(state, args.user, getattr(args, "profile_mode", None))
             if args.command == "export":
                 sys.stdout.write(config)
@@ -188,7 +197,8 @@ def main():
     commands.add_parser("init", help="安装或恢复").add_argument("endpoint")
     commands.add_parser("list", help="查看 25 个用户的状态与模式")
     commands.add_parser("redeem", help="从标准输入读取一次性领取码")
-    for name, desc in (("issue", "签发十分钟一次性领取码"), ("enable", "启用"), ("disable", "禁用"), ("rotate", "轮换密钥"),
+    commands.add_parser("bundles", help="导出全部已启用用户的双模式配置")
+    for name, desc in (("bundle", "生成用户的双模式配置"), ("issue", "签发十分钟一次性领取码"), ("enable", "启用"), ("disable", "禁用"), ("rotate", "轮换密钥"),
                        ("export", "输出配置到标准输出"), ("qr", "显示终端二维码"),
                        ("mode", "选择客户端路由模式")):
         sub = commands.add_parser(name, help=desc)

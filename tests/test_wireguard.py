@@ -129,3 +129,16 @@ class Workflow(unittest.TestCase):
             code = self.cmd("issue")
         with patch.object(wg.time, "time", return_value=700), self.assertRaises(ValueError):
             redeem(code)
+
+    def test_admin_bundles(self):
+        self.cmd("init")
+        before = wg.STATE.read_bytes()
+        bundles = json.loads(self.cmd("bundles"))
+        self.assertEqual(len(bundles), 25)
+        self.assertEqual(bundles[1], json.loads(self.cmd("bundle")))
+        self.assertEqual(wg.STATE.read_bytes(), before)
+        self.cmd("disable")
+        with self.assertRaises(ValueError):
+            self.cmd("bundle")
+        remaining = json.loads(self.cmd("bundles"))
+        self.assertEqual(remaining, [b for b in bundles if b["name"] != "user02"])

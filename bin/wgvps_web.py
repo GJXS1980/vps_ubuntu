@@ -1,12 +1,14 @@
 """WSGI application for private HTTPS distribution of WireGuard profiles."""
 import base64
 import hmac
+import io
 import ipaddress
 import json
 import os
 import re
 import secrets
 import subprocess
+import zipfile
 from html import escape
 from pathlib import Path
 from urllib.parse import parse_qs
@@ -90,11 +92,16 @@ def application(env, start_response):
                                f'{"已启用" if enabled == "enabled" else "已禁用"}</option>')
             return page("WireGuard 配置管理", '<form method="post"><label for="user">选择用户</label>'
                         f'<select id="user" name="user">{"".join(options)}</select>'
-                        f'<input type="hidden" name="csrf" value="{csrf}"><p>每条领取链接有效 10 分钟，'
-                        '可领取全局和代理两份配置。重新签发会替换该用户的旧链接。</p>'
-                        '<button name="action" value="issue">创建分发链接</button>'
+                        f'<input type="hidden" name="csrf" value="{csrf}"><p>生成全局和代理两份配置，'
+                        '可分别下载发给用户，或让手机直接扫描二维码。</p>'
+                        '<button name="action" value="bundle">生成配置并分发</button>'
+                        '<button name="action" value="issue">签发内网领取链接</button>'
                         '<button name="action" value="enable">启用用户</button>'
-                        '<button name="action" value="disable">禁用用户</button></form>')
+                        '<button name="action" value="disable">禁用用户</button>'
+                        '<button name="action" value="confirm-rotate">轮换密钥…</button></form>'
+                        f'<form method="post"><input type="hidden" name="csrf" value="{csrf}">'
+                        '<p>批量生成全部已启用用户的配置。压缩包按用户分目录，请只向每人发送其自己的文件。</p>'
+                        '<button name="action" value="archive">下载全部配置 ZIP</button></form>')
         if method != "POST":
             return page("请求方式错误", status="405 Method Not Allowed")
         size = int(env.get("CONTENT_LENGTH") or 0)
@@ -106,10 +113,36 @@ def application(env, start_response):
                     or env.get("HTTP_ORIGIN", origin) != origin):
                 return page("请重新打开管理页", status="403 Forbidden")
             user, action = fields.get("user", [""])[0], fields.get("action", [""])[0]
-            if not re.fullmatch(r"user(0[1-9]|1[0-9]|2[0-5])", user) or action not in ("issue","enable","disable"):
+            if action == "archive":
+                bundles = json.loads(manager("bundles"))
+                if not bundles:
+                    return page("没有已启用的用户", '<a href="/admin">返回用户管理</a>')
+                stream = io.BytesIO()
+                with zipfile.ZipFile(stream, "w", zipfile.ZIP_DEFLATED) as archive:
+                    for item in bundles:
+                        name = item["name"]
+                        for mode, config in item["profiles"].items():
+                            archive.writestr(f"{name}/{name}-{mode}.conf", config)
+                payload = stream.getvalue()
+                start_response("200 OK", [("Content-Type", "application/zip"),
+                               ("Content-Disposition", 'attachment; filename="wireguard-users.zip"'),
+                               ("Cache-Control", "no-store"), ("X-Content-Type-Options", "nosniff"),
+                               ("Content-Length", str(len(payload)))])
+                return [payload]
+            if not re.fullmatch(r"user(0[1-9]|1[0-9]|2[0-5])", user) or action not in (
+                    "issue", "enable", "disable", "bundle", "confirm-rotate", "rotate"):
                 return page("用户或操作无效", status="400 Bad Request")
-            result = manager(action, user).decode().strip()
             back = '<p><a href="/admin">返回用户管理</a></p>'
+            if action == "confirm-rotate":
+                return page(f"轮换 {user} 的密钥？", '<p>旧配置会立即失效，轮换后请重新生成并分发两份配置。</p>'
+                            f'<form method="post"><input type="hidden" name="csrf" value="{csrf}">'
+                            f'<input type="hidden" name="user" value="{user}">'
+                            '<button name="action" value="rotate">确认轮换密钥</button></form>' + back)
+            result = manager(action, user).decode().strip()
+            if action == "bundle":
+                return page(f"分发 {user} 的配置", profiles(json.loads(result)) + back)
+            if action == "rotate":
+                return page(f"{user} 密钥已轮换", back)
             if action == "issue":
                 link = escape(origin + "/#" + result, quote=True)
                 return page(f"{user} 的领取链接", f'<p>请单独发给该用户。链接仅可领取一次。</p>'
@@ -120,6 +153,6 @@ def application(env, start_response):
             return page("领取码格式无效", status="400 Bad Request")
         return page("导入配置", profiles(json.loads(manager("redeem", data=code.encode()))))
     except subprocess.CalledProcessError:
-        return page("操作未完成", "<p>请检查用户状态或重新签发领取链接。</p>", "409 Conflict")
+        return page("操作未完成", "<p>请检查用户是否启用。若领取码已失效，请重新签发。</p>", "409 Conflict")
     except (ValueError, OSError, subprocess.TimeoutExpired):
         return page("请求未完成", "<p>请返回后重试。</p>", "400 Bad Request")

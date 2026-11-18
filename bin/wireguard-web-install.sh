@@ -3,7 +3,7 @@ set -Eeuo pipefail
 umask 077
 [[ $EUID == 0 ]] || { echo '请使用 sudo/root'; exit 1; }
 src=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-address=${1:-}
+address=${1:-10.66.77.1}
 [[ -f /etc/wireguard/wgvps-users.json ]] || { echo '请先安装 WireGuard 用户管理器'; exit 1; }
 network=$(python3 - "$address" <<'PY'
 import ipaddress, json, subprocess, sys
@@ -56,7 +56,7 @@ EOF
 openssl x509 -req -in "$stage/tls.csr" -CA "$cfg/ca.crt" -CAkey "$cfg/ca.key" -CAcreateserial \
   -days 365 -extfile "$stage/extensions" -out "$stage/tls.crt"
 cat > "$stage/sudoers" <<'EOF'
-wgvps-web ALL=(root) NOPASSWD: /usr/local/sbin/wgvps-users list, /usr/local/sbin/wgvps-users redeem, /usr/local/sbin/wgvps-users issue user??, /usr/local/sbin/wgvps-users enable user??, /usr/local/sbin/wgvps-users disable user??
+wgvps-web ALL=(root) NOPASSWD: /usr/local/sbin/wgvps-users list, /usr/local/sbin/wgvps-users redeem, /usr/local/sbin/wgvps-users issue user??, /usr/local/sbin/wgvps-users enable user??, /usr/local/sbin/wgvps-users disable user??, /usr/local/sbin/wgvps-users rotate user??, /usr/local/sbin/wgvps-users bundle user??, /usr/local/sbin/wgvps-users bundles
 EOF
 visudo -cf "$stage/sudoers"
 install -m 0440 "$stage/sudoers" /etc/sudoers.d/wgvps-web
