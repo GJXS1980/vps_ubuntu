@@ -143,6 +143,30 @@ def customer_name(users, exclude=None):
     return label
 
 
+def customer_status(state):
+    try:
+        output = run("wg", "show", "wgvps", "latest-handshakes")
+        handshakes = {key: int(stamp) for key, stamp in (row.split() for row in output.splitlines())}
+    except (OSError, subprocess.CalledProcessError, ValueError):
+        handshakes = {}
+    now = int(time.time())
+    rows = []
+    for name, user in state["users"].items():
+        stamp = handshakes.get(user["public"])
+        age = now - stamp if stamp and 0 < stamp <= now else None
+        if not user["enabled"]:
+            status = "disabled"
+        elif stamp == 0:
+            status = "never"
+        elif age is None:
+            status = "unknown"
+        else:
+            status = "online" if age <= 180 else "offline"
+        rows.append(dict(name=name, label=user.get("label", name), status=status,
+                         address=addresses(name, user).split("/")[0], age=age))
+    return rows
+
+
 def manage(args):
     if PENDING.exists():
         reconcile(json.loads(PENDING.read_text()))
@@ -155,6 +179,9 @@ def manage(args):
             state = initial(args.endpoint, args.count)
     else:
         state = json.loads(STATE.read_text())
+        if args.command == "status":
+            print(json.dumps(customer_status(state)))
+            return
         if args.command == "list":
             for name, user in state["users"].items():
                 print(name, "enabled" if user["enabled"] else "disabled", user["mode"], user.get("label", name))
@@ -243,6 +270,7 @@ def main():
     init.add_argument("endpoint")
     init.add_argument("--count", type=int, default=1)
     commands.add_parser("add", help="新增客户，从标准输入读取名称")
+    commands.add_parser("status", help="查看客户的连接状态与最近握手")
     commands.add_parser("list", help="列出客户编号、状态、模式和名称")
     commands.add_parser("redeem", help="从标准输入读取一次性领取码")
     commands.add_parser("bundles", help="导出全部已启用用户的双模式配置")

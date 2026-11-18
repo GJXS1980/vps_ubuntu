@@ -53,6 +53,53 @@ def profiles(bundle, csrf=None):
             "代理模式下，在指定应用中设置 SOCKS5 地址 10.66.77.1，端口 1080。</p>" + "".join(cards))
 
 
+CONNECTION = {"online": "在线", "offline": "离线", "never": "尚无握手",
+              "unknown": "状态未知", "disabled": "已禁用"}
+
+
+def customer_directory(rows, query, csrf):
+    filters = parse_qs(query, max_num_fields=8)
+    term = filters.get("q", [""])[0].strip()
+    selected = filters.get("status", [""])[0]
+    options = ['<option value="">全部状态</option>']
+    for key, title in CONNECTION.items():
+        mark = " selected" if key == selected else ""
+        options.append(f'<option value="{key}"{mark}>{title}</option>')
+    form = (f'<form method="get" action="/admin"><label for="q">客户名称、编号或隧道 IPv4</label>'
+            f'<input id="q" name="q" value="{escape(term)}"><label for="status">连接状态</label>'
+            f'<select name="status" id="status">{"".join(options)}</select>'
+            '<button>查询 / 刷新</button> <a href="/admin">清除筛选</a></form>')
+    cards = []
+    hidden = f'<input type="hidden" name="csrf" value="{csrf}">'
+    for row in rows:
+        name, label, address = (row[k] for k in ("name", "label", "address"))
+        status = row["status"]
+        if selected and selected != status:
+            continue
+        if not any(term.casefold() in value.casefold() for value in (name, label, address)):
+            continue
+        name = escape(name)
+        caption = name if label == name else f"{escape(label)}（{name}）"
+        age = row["age"]
+        handshake = "—" if age is None else (f"{age} 秒前" if age < 60 else f"{age // 60} 分钟前")
+        if status == "disabled":
+            buttons = '<button name="action" value="enable">启用用户</button><button name="action" value="confirm-delete">删除已禁用客户…</button>'
+        else:
+            buttons = ('<button name="action" value="bundle">生成配置并分发</button>'
+                       '<button name="action" value="issue">签发内网领取链接</button>'
+                       '<button name="action" value="disable">禁用用户</button>')
+        cards.append(f'<section><strong>{caption}</strong> · {CONNECTION[status]}'
+                     f'<div>{escape(address)} · 最近握手：{handshake}</div><details><summary>管理客户</summary>'
+                     f'<form method="post" action="/admin">{hidden}<input type="hidden" name="user" value="{name}">'
+                     f'{buttons}<button name="action" value="confirm-rotate">轮换密钥…</button>'
+                     '<label>新名称<input name="label" maxlength="40"></label>'
+                     '<button name="action" value="rename">保存名称</button></form></details></section>')
+    total_online = sum(row["status"] == "online" for row in rows)
+    return (form + f'<p>共 {len(rows)} / 253 个客户，在线 {total_online} 个，本次匹配 {len(cards)} 个。</p>'
+            '<p>在线表示最近 3 分钟内有握手。点击“查询 / 刷新”更新状态。</p>'
+            + ("".join(cards) or "<p>没有匹配的客户。</p>"))
+
+
 def application(env, start_response):
     nonce = secrets.token_urlsafe(20)
 
@@ -98,32 +145,14 @@ def application(env, start_response):
                         f'<script nonce="{nonce}">if(location.hash){{document.querySelector("#code").value='
                         'location.hash.slice(1);history.replaceState(null,"","/")}</script>')
         if method == "GET":
-            options = []
-            for row in manager("list").decode().splitlines():
-                name, enabled, _, *labels = row.split(maxsplit=3)
-                label = labels[0] if labels else name
-                caption = name if label == name else f"{label}（{name}）"
-                options.append(f'<option value="{escape(name)}">{escape(caption)} · '
-                               f'{"已启用" if enabled == "enabled" else "已禁用"}</option>')
-            return page("WireGuard 配置管理", f'<p>当前客户数 {len(options)} / 253</p>'
+            directory = customer_directory(json.loads(manager("status")), env.get("QUERY_STRING", ""), csrf)
+            return page("WireGuard 配置管理",
                         f'<form method="post"><input type="hidden" name="csrf" value="{csrf}">'
                         '<label for="label">新增客户名称</label><input id="label" name="label" required maxlength="40">'
                         '<button name="action" value="add">新增客户</button></form>'
-                        '<form method="post"><label for="user">选择客户</label>'
-                        f'<select id="user" name="user">{"".join(options)}</select>'
-                        f'<input type="hidden" name="csrf" value="{csrf}"><p>生成全局和代理两份配置，'
-                        '可分别下载发给用户，或让手机直接扫描二维码。</p>'
-                        '<button name="action" value="bundle">生成配置并分发</button>'
-                        '<button name="action" value="issue">签发内网领取链接</button>'
-                        '<button name="action" value="enable">启用用户</button>'
-                        '<button name="action" value="disable">禁用用户</button>'
-                        '<button name="action" value="confirm-rotate">轮换密钥…</button>'
-                        '<button name="action" value="confirm-delete">删除已禁用客户…</button>'
-                        '<label for="new-label">新名称（改名时填写）</label><input id="new-label" name="label" maxlength="40">'
-                        '<button name="action" value="rename">保存名称</button></form>'
                         f'<form method="post"><input type="hidden" name="csrf" value="{csrf}">'
                         '<p>批量生成全部已启用用户的配置。压缩包按用户分目录，请只向每人发送其自己的文件。</p>'
-                        '<button name="action" value="archive">下载全部配置 ZIP</button></form>')
+                        '<button name="action" value="archive">下载全部配置 ZIP</button></form>' + directory)
         if method != "POST":
             return page("请求方式错误", status="405 Method Not Allowed")
         size = int(env.get("CONTENT_LENGTH") or 0)

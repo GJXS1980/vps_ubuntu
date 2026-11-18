@@ -177,3 +177,19 @@ class Workflow(unittest.TestCase):
         with patch.object(sys, "stdin", io.StringIO("补位")):
             self.assertEqual(self.cmd("add").strip(), "user254")
         self.assertIn("10.66.77.2/32", self.cmd("export", "user254"))
+
+    def test_customer_status(self):
+        self.cmd("init", count=6)
+        self.cmd("disable", "user06")
+        users = json.loads(wg.STATE.read_text())["users"]
+        output = "\n".join(f"{u['public']} {stamp}" for u, stamp in zip(users.values(), [820, 819, 0, 1001]))
+        with patch.object(wg, "run", return_value=output) as read, patch.object(wg.time, "time", return_value=1000):
+            rows = json.loads(self.cmd("status"))
+            read.assert_called_once_with("wg", "show", "wgvps", "latest-handshakes")
+            self.assertEqual([r["status"] for r in rows], ["online", "offline", "never", "unknown", "unknown", "disabled"])
+            self.assertEqual(rows[0]["age"], 180)
+            self.assertEqual(set(rows[0]), {"name", "label", "address", "age", "status"})
+        with patch.object(wg, "run", side_effect=OSError()):
+            rows = json.loads(self.cmd("status"))
+            self.assertEqual(rows[0]["status"], "unknown")
+            self.assertEqual(rows[-1]["status"], "disabled")

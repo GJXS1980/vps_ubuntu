@@ -39,6 +39,10 @@ class Portal(unittest.TestCase):
         payload = web.application(env, start_response)[0]
         return int(status[0][:3]), payload if binary else payload.decode()
 
+    def directory(self, name, label=None):
+        return json.dumps([dict(name=name, label=label or name, address="10.66.77.2",
+                                status="online", age=30)]).encode()
+
     def test_access(self):
         with patch.object(web, "manager") as manager:
             self.assertEqual(self.request("/admin")[0], 401)
@@ -49,7 +53,7 @@ class Portal(unittest.TestCase):
             manager.assert_not_called()
 
     def test_issue_and_download(self):
-        with patch.object(web, "manager", return_value=b"user02 enabled global") as manager:
+        with patch.object(web, "manager", return_value=self.directory("user02")) as manager:
             status, html = self.request("/admin", admin=True)
             csrf = re.search(r'name="csrf" value="([0-9a-f]+)"', html)[1]
             manager.return_value = b"a" * 32
@@ -71,7 +75,7 @@ class Portal(unittest.TestCase):
     def test_admin_direct_export(self):
         import zipfile
         bundle = {"name": "user25", "profiles": {"global": "full", "proxy": "split"}}
-        with patch.object(web, "manager", return_value=b"user25 enabled global") as manager:
+        with patch.object(web, "manager", return_value=self.directory("user25")) as manager:
             _, html = self.request("/admin", admin=True)
             csrf = re.search(r'name="csrf" value="([0-9a-f]+)"', html)[1]
             self.assertEqual(self.headers["Referrer-Policy"], "same-origin")
@@ -103,7 +107,7 @@ class Portal(unittest.TestCase):
                 self.assertEqual(archive.read("user25/user25-proxy.conf"), b"split")
 
     def test_manage_customers(self):
-        with patch.object(web, "manager", return_value="user100 enabled global 上海 办公室".encode()) as mgr:
+        with patch.object(web, "manager", return_value=self.directory("user100", "上海 办公室")) as mgr:
             _, html = self.request("/admin", admin=True)
             self.assertIn("上海 办公室（user100）", html)
             csrf = re.search(r'name="csrf" value="([0-9a-f]+)"', html)[1]
@@ -121,3 +125,15 @@ class Portal(unittest.TestCase):
             form.update(action="delete")
             self.assertEqual(self.request("/admin", form, admin=True)[0], 200)
             mgr.assert_called_once_with("delete", "user100")
+
+    def test_customer_search(self):
+        with patch.object(web, "manager", return_value=self.directory("user100", "上海 Office")) as mgr:
+            for query in ("q=OFFICE", "q=100", "q=77.2", "status=online"):
+                status, html = self.request("/admin", admin=True, QUERY_STRING=query)
+                self.assertEqual(status, 200)
+                self.assertIn('name="user" value="user100"', html)
+                self.assertIn("30 秒前", html)
+            _, html = self.request("/admin", admin=True, QUERY_STRING="q=Office&status=disabled")
+            self.assertIn("没有匹配的客户", html)
+            self.assertNotIn('name="user" value="user100"', html)
+            mgr.assert_called_with("status")
