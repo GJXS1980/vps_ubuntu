@@ -56,7 +56,7 @@ EOF
 openssl x509 -req -in "$stage/tls.csr" -CA "$cfg/ca.crt" -CAkey "$cfg/ca.key" -CAcreateserial \
   -days 365 -extfile "$stage/extensions" -out "$stage/tls.crt"
 cat > "$stage/sudoers" <<'EOF'
-wgvps-web ALL=(root) NOPASSWD: /usr/local/sbin/wgvps-users list, /usr/local/sbin/wgvps-users redeem, /usr/local/sbin/wgvps-users issue user??, /usr/local/sbin/wgvps-users enable user??, /usr/local/sbin/wgvps-users disable user??, /usr/local/sbin/wgvps-users rotate user??, /usr/local/sbin/wgvps-users bundle user??, /usr/local/sbin/wgvps-users bundles
+wgvps-web ALL=(root) NOPASSWD: /usr/local/sbin/wgvps-users list, /usr/local/sbin/wgvps-users redeem, /usr/local/sbin/wgvps-users issue user[0-9]*, /usr/local/sbin/wgvps-users enable user[0-9]*, /usr/local/sbin/wgvps-users disable user[0-9]*, /usr/local/sbin/wgvps-users rotate user[0-9]*, /usr/local/sbin/wgvps-users bundle user[0-9]*, /usr/local/sbin/wgvps-users bundles, /usr/local/sbin/wgvps-users add, /usr/local/sbin/wgvps-users rename user[0-9]*, /usr/local/sbin/wgvps-users delete user[0-9]*
 EOF
 visudo -cf "$stage/sudoers"
 install -m 0440 "$stage/sudoers" /etc/sudoers.d/wgvps-web

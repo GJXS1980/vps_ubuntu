@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Manage the 25 wgvps peers on Ubuntu. All state and exports contain secrets."""
+"""Manage wgvps peers on Ubuntu. All state and exports contain secrets."""
 import argparse
 import configparser
 import fcntl
@@ -20,7 +20,7 @@ STATE = ROOT / "wgvps-users.json"
 PENDING = ROOT / "wgvps-pending.json"
 LEGACY = ROOT / "windows-vps.conf"
 LIVE = Path("/sys/class/net/wgvps")
-USERS = tuple(f"user{i:02}" for i in range(1, 26))
+CAPACITY = 253
 
 
 def atomic(path, data):
@@ -50,8 +50,8 @@ def keys():
     return dict(private=private, public=public(private), psk=run("wg", "genpsk"))
 
 
-def addresses(user):
-    host = int(user[4:]) + 1
+def addresses(user, record=None):
+    host = (record or {}).get("host", int(user[4:]) + 1)
     return f"10.66.77.{host}/32, fd42:66:77::{host:x}/128"
 
 
@@ -61,7 +61,9 @@ def section(text):
     return parser
 
 
-def initial(endpoint):
+def initial(endpoint, count):
+    if not 1 <= count <= CAPACITY:
+        raise ValueError("初始客户数量须为 1 至 253")
     server = CONF.read_text()
     base, marker, peer = server.partition("[Peer]")
     if not marker or "[Peer]" in peer:
@@ -85,7 +87,7 @@ def initial(endpoint):
             and not interface.getboolean("SaveConfig", fallback=False)):
         raise ValueError("现有配置与原版单客户端参数或指定 Endpoint 不匹配")
     users = {u: dict(first if u == "user01" else keys(), enabled=True, mode="global")
-             for u in USERS}
+             for u in (f"user{i:02}" for i in range(1, count + 1))}
     return dict(base=base.rstrip(), server_public=server_pub, endpoint=endpoint, users=users)
 
 
@@ -94,7 +96,7 @@ def server_config(state):
     for name, user in state["users"].items():
         if user["enabled"]:
             peers.append(f"[Peer]\n# {name}\nPublicKey = {user['public']}\n"
-                         f"PresharedKey = {user['psk']}\nAllowedIPs = {addresses(name)}")
+                         f"PresharedKey = {user['psk']}\nAllowedIPs = {addresses(name, user)}")
     return "\n\n".join(peers) + "\n"
 
 
@@ -103,7 +105,7 @@ def profile(state, name, mode=None):
     global_mode = (mode or user["mode"]) == "global"
     dns = "DNS = 1.1.1.1, 1.0.0.1\n" if global_mode else ""
     routes = "0.0.0.0/0, ::/0" if global_mode else "10.66.77.1/32"
-    return (f"[Interface]\nPrivateKey = {user['private']}\nAddress = {addresses(name)}\n"
+    return (f"[Interface]\nPrivateKey = {user['private']}\nAddress = {addresses(name, user)}\n"
             f"{dns}MTU = 1380\n\n[Peer]\nPublicKey = {state['server_public']}\n"
             f"PresharedKey = {user['psk']}\nEndpoint = {state['endpoint']}:51820\n"
             f"AllowedIPs = {routes}\nPersistentKeepalive = 25\n")
@@ -120,11 +122,25 @@ def reconcile(state):
     if LIVE.exists():
         stripped = run("wg-quick", "strip", str(CONF))
         run("wg", "syncconf", "wgvps", "/dev/stdin", data=stripped + "\n")
-    if state["users"]["user01"]["enabled"]:
+    if state["users"].get("user01", {}).get("enabled"):
         atomic(LEGACY, profile(state, "user01"))
     else:
         LEGACY.unlink(missing_ok=True)
     PENDING.replace(STATE)
+
+
+class CustomerError(ValueError):
+    pass
+
+
+def customer_name(users, exclude=None):
+    label = sys.stdin.read(257).strip()
+    if not 1 <= len(label) <= 40 or not all(c.isalnum() or c in " _-" for c in label):
+        raise CustomerError("名称须为 1 至 40 个字，可用中文、字母、数字、空格、下划线或短横线")
+    if any(label.casefold() in (key.casefold(), u.get("label", key).casefold())
+           for key, u in users.items() if key != exclude):
+        raise CustomerError("客户名称已存在")
+    return label
 
 
 def manage(args):
@@ -136,12 +152,12 @@ def manage(args):
             if state["endpoint"] != args.endpoint:
                 raise ValueError("已安装的 Endpoint 与参数不一致")
         else:
-            state = initial(args.endpoint)
+            state = initial(args.endpoint, args.count)
     else:
         state = json.loads(STATE.read_text())
         if args.command == "list":
             for name, user in state["users"].items():
-                print(name, "enabled" if user["enabled"] else "disabled", user["mode"])
+                print(name, "enabled" if user["enabled"] else "disabled", user["mode"], user.get("label", name))
             return
         if args.command == "bundles":
             print(json.dumps([bundle(state, name) for name, user in state["users"].items()
@@ -159,7 +175,31 @@ def manage(args):
                     print(json.dumps(bundle(state, name)))
                     return
             raise ValueError("领取码无效、已用或已过期")
-        user = state["users"][args.user]
+        users = state["users"]
+        if args.command == "add":
+            label = customer_name(users)
+            used = {u.get("host", int(k[4:]) + 1) for k, u in users.items()}
+            host = next((h for h in range(2, 255) if h not in used), None)
+            if host is None:
+                raise CustomerError("当前网段最多容纳 253 个客户")
+            number = state.get("last_id", max((int(k[4:]) for k in users), default=0)) + 1
+            reserved = {u.get("label", k).casefold() for k, u in users.items()}
+            while f"user{number:02}" in reserved:
+                number += 1
+            name = f"user{number:02}"
+            state["last_id"] = number
+            users[name] = dict(keys(), enabled=True, mode="global", label=label, host=host)
+            atomic(PENDING, json.dumps(state))
+            reconcile(state)
+            print(name)
+            return
+        if args.user not in users:
+            raise CustomerError("找不到该客户，请刷新管理页")
+        user = users[args.user]
+        if args.command == "rename":
+            user["label"] = customer_name(users, args.user)
+            atomic(STATE, json.dumps(state))
+            return
         if args.command in ("issue", "bundle", "export", "qr") and not user["enabled"]:
             raise ValueError("该用户已禁用")
         if args.command == "bundle":
@@ -181,7 +221,12 @@ def manage(args):
             return
         if args.command in ("rotate", "disable"):
             user.pop("ticket", None)
-        if args.command == "rotate":
+        if args.command == "delete":
+            if user["enabled"]:
+                raise CustomerError("请先禁用客户，再确认删除")
+            state.setdefault("last_id", max(int(k[4:]) for k in users))
+            del users[args.user]
+        elif args.command == "rotate":
             user.update(keys())
         elif args.command == "mode":
             user["mode"] = args.mode
@@ -194,15 +239,19 @@ def manage(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    commands.add_parser("init", help="安装或恢复").add_argument("endpoint")
-    commands.add_parser("list", help="查看 25 个用户的状态与模式")
+    init = commands.add_parser("init", help="安装或恢复")
+    init.add_argument("endpoint")
+    init.add_argument("--count", type=int, default=1)
+    commands.add_parser("add", help="新增客户，从标准输入读取名称")
+    commands.add_parser("list", help="列出客户编号、状态、模式和名称")
     commands.add_parser("redeem", help="从标准输入读取一次性领取码")
     commands.add_parser("bundles", help="导出全部已启用用户的双模式配置")
     for name, desc in (("bundle", "生成用户的双模式配置"), ("issue", "签发十分钟一次性领取码"), ("enable", "启用"), ("disable", "禁用"), ("rotate", "轮换密钥"),
                        ("export", "输出配置到标准输出"), ("qr", "显示终端二维码"),
-                       ("mode", "选择客户端路由模式")):
+                       ("mode", "选择客户端路由模式"), ("rename", "从标准输入读取新名称"),
+                       ("delete", "删除已禁用客户")):
         sub = commands.add_parser(name, help=desc)
-        sub.add_argument("user", choices=USERS, metavar="user01..user25")
+        sub.add_argument("user", metavar="客户编号")
         if name in ("export", "qr"):
             sub.add_argument("--profile-mode", choices=("global", "proxy"))
         if name == "mode":
@@ -219,6 +268,9 @@ def main():
 if __name__ == "__main__":
     try:
         main()
+    except CustomerError as exc:
+        print(exc, file=sys.stderr)
+        sys.exit(3)
     except (ValueError, KeyError, OSError, configparser.Error, subprocess.CalledProcessError) as exc:
         # Parser errors may contain configuration lines with keys.
         if isinstance(exc, configparser.Error):

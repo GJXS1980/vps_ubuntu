@@ -47,9 +47,9 @@ class Workflow(unittest.TestCase):
                              + "\n[Peer]\nPublicKey = pub-srv\nPresharedKey = secret\n"
                              "Endpoint = 192.0.2.1:51820\n")
 
-    def cmd(self, command, user="user02", mode="proxy"):
+    def cmd(self, command, user="user02", mode="proxy", count=25):
         with contextlib.redirect_stdout(io.StringIO()) as stream:
-            wg.manage(SimpleNamespace(command=command, endpoint="192.0.2.1", user=user, mode=mode))
+            wg.manage(SimpleNamespace(command=command, endpoint="192.0.2.1", user=user, mode=mode, count=count))
         return stream.getvalue()
 
     def test_lifecycle(self):
@@ -142,3 +142,38 @@ class Workflow(unittest.TestCase):
             self.cmd("bundle")
         remaining = json.loads(self.cmd("bundles"))
         self.assertEqual(remaining, [b for b in bundles if b["name"] != "user02"])
+
+    def test_dynamic_customers_and_legacy_state(self):
+        self.cmd("init")
+        before = self.cmd("export", "user25")
+        def named(action, name, user="user25"):
+            with patch.object(sys, "stdin", io.StringIO(name)):
+                return self.cmd(action, user)
+        named("rename", "研发 A")
+        self.assertIn("user25 enabled global 研发 A", self.cmd("list"))
+        self.assertEqual(before, self.cmd("export", "user25"))
+        with self.assertRaises(wg.CustomerError):
+            named("add", "研发 a")
+        self.assertEqual(named("add", "上海 客户").strip(), "user26")
+        with self.assertRaises(wg.CustomerError):
+            self.cmd("delete", "user26")
+        old = self.cmd("export", "user26")
+        self.cmd("disable", "user26")
+        self.cmd("delete", "user26")
+        self.assertEqual(named("add", "新客户").strip(), "user27")
+        new = self.cmd("export", "user27")
+        self.assertEqual(wg.section(old)["Interface"]["Address"], wg.section(new)["Interface"]["Address"])
+        self.assertNotEqual(wg.section(old)["Interface"]["PrivateKey"], wg.section(new)["Interface"]["PrivateKey"])
+        self.cmd("init", count=1)
+        self.assertEqual(len(self.cmd("list").splitlines()), 26)
+
+    def test_capacity_and_removing_bootstrap_peer(self):
+        self.cmd("init", count=253)
+        with patch.object(sys, "stdin", io.StringIO("额外客户")), self.assertRaises(wg.CustomerError):
+            self.cmd("add")
+        self.cmd("disable", "user01")
+        self.cmd("delete", "user01")
+        self.assertFalse(wg.LEGACY.exists())
+        with patch.object(sys, "stdin", io.StringIO("补位")):
+            self.assertEqual(self.cmd("add").strip(), "user254")
+        self.assertIn("10.66.77.2/32", self.cmd("export", "user254"))

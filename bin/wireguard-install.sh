@@ -5,6 +5,8 @@ set -Eeuo pipefail
 . /etc/os-release
 [[ ${ID:-} == ubuntu && ${VERSION_ID:-} == 22.04 ]] || { echo '仅支持 Ubuntu 22.04'; exit 1; }
 endpoint=${1:-}
+count=${2-1}
+[[ $# -le 2 && $count =~ ^[1-9][0-9]{0,2}$ ]] && ((count <= 253)) || { echo '初始客户数量须为 1 至 253'; exit 2; }
 [[ $endpoint =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || { echo '用法：sudo bash bin/wireguard-install.sh VPS公网IPv4'; exit 2; }
 IFS=. read -r -a octets <<< "$endpoint"
 for octet in "${octets[@]}"; do
@@ -28,14 +30,14 @@ install_deps() {
 }
 finish_install() {
   install -m 0755 "$src/wgvps-users.py" "$manager"
-  "$manager" init "$endpoint"
+  "$manager" init "$endpoint" --count "$count"
   install -m 0644 "$src/../systemd/$unit" "/etc/systemd/system/$unit"
   systemctl daemon-reload
   systemctl enable --now wg-quick@wgvps
   systemctl enable --now "$unit"
   systemctl is-active --quiet wg-quick@wgvps
   systemctl is-active --quiet "$unit"
-  echo '25 个用户已就绪。运行 sudo wgvps-users list 查看，云防火墙需放行入站 UDP 51820。'
+  echo '客户管理已就绪。运行 sudo wgvps-users list 查看，云防火墙需放行入站 UDP 51820。'
 }
 if [[ -f $conf && ( -f $client || -f /etc/wireguard/wgvps-users.json ) ]]; then
   install_deps

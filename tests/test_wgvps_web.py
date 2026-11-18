@@ -101,3 +101,23 @@ class Portal(unittest.TestCase):
             with zipfile.ZipFile(io.BytesIO(payload)) as archive:
                 self.assertEqual(archive.read("user25/user25-global.conf"), b"full")
                 self.assertEqual(archive.read("user25/user25-proxy.conf"), b"split")
+
+    def test_manage_customers(self):
+        with patch.object(web, "manager", return_value="user100 enabled global 上海 办公室".encode()) as mgr:
+            _, html = self.request("/admin", admin=True)
+            self.assertIn("上海 办公室（user100）", html)
+            csrf = re.search(r'name="csrf" value="([0-9a-f]+)"', html)[1]
+            form = {"action": "add", "csrf": csrf, "label": "北京"}
+            mgr.return_value = b"user101"
+            self.assertEqual(self.request("/admin", form, admin=True)[0], 200)
+            mgr.assert_called_with("add", data="北京".encode())
+            form.update(action="rename", user="user100")
+            self.assertEqual(self.request("/admin", form, admin=True)[0], 200)
+            mgr.assert_called_with("rename", "user100", data="北京".encode())
+            form.update(action="confirm-delete")
+            mgr.reset_mock()
+            self.assertIn("确认删除", self.request("/admin", form, admin=True)[1])
+            mgr.assert_not_called()
+            form.update(action="delete")
+            self.assertEqual(self.request("/admin", form, admin=True)[0], 200)
+            mgr.assert_called_once_with("delete", "user100")

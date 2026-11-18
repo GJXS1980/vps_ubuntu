@@ -100,10 +100,16 @@ def application(env, start_response):
         if method == "GET":
             options = []
             for row in manager("list").decode().splitlines():
-                name, enabled, _ = row.split()
-                options.append(f'<option value="{escape(name)}">{escape(name)} · '
+                name, enabled, _, *labels = row.split(maxsplit=3)
+                label = labels[0] if labels else name
+                caption = name if label == name else f"{label}（{name}）"
+                options.append(f'<option value="{escape(name)}">{escape(caption)} · '
                                f'{"已启用" if enabled == "enabled" else "已禁用"}</option>')
-            return page("WireGuard 配置管理", '<form method="post"><label for="user">选择用户</label>'
+            return page("WireGuard 配置管理", f'<p>当前客户数 {len(options)} / 253</p>'
+                        f'<form method="post"><input type="hidden" name="csrf" value="{csrf}">'
+                        '<label for="label">新增客户名称</label><input id="label" name="label" required maxlength="40">'
+                        '<button name="action" value="add">新增客户</button></form>'
+                        '<form method="post"><label for="user">选择客户</label>'
                         f'<select id="user" name="user">{"".join(options)}</select>'
                         f'<input type="hidden" name="csrf" value="{csrf}"><p>生成全局和代理两份配置，'
                         '可分别下载发给用户，或让手机直接扫描二维码。</p>'
@@ -111,14 +117,17 @@ def application(env, start_response):
                         '<button name="action" value="issue">签发内网领取链接</button>'
                         '<button name="action" value="enable">启用用户</button>'
                         '<button name="action" value="disable">禁用用户</button>'
-                        '<button name="action" value="confirm-rotate">轮换密钥…</button></form>'
+                        '<button name="action" value="confirm-rotate">轮换密钥…</button>'
+                        '<button name="action" value="confirm-delete">删除已禁用客户…</button>'
+                        '<label for="new-label">新名称（改名时填写）</label><input id="new-label" name="label" maxlength="40">'
+                        '<button name="action" value="rename">保存名称</button></form>'
                         f'<form method="post"><input type="hidden" name="csrf" value="{csrf}">'
                         '<p>批量生成全部已启用用户的配置。压缩包按用户分目录，请只向每人发送其自己的文件。</p>'
                         '<button name="action" value="archive">下载全部配置 ZIP</button></form>')
         if method != "POST":
             return page("请求方式错误", status="405 Method Not Allowed")
         size = int(env.get("CONTENT_LENGTH") or 0)
-        if not 0 < size <= 512 or env.get("CONTENT_TYPE", "").split(";")[0] != "application/x-www-form-urlencoded":
+        if not 0 < size <= 1024 or env.get("CONTENT_TYPE", "").split(";")[0] != "application/x-www-form-urlencoded":
             return page("表单无效", status="400 Bad Request")
         fields = parse_qs(env["wsgi.input"].read(size).decode("ascii"), max_num_fields=4)
         if admin:
@@ -126,6 +135,11 @@ def application(env, start_response):
                     or env.get("HTTP_ORIGIN", origin) != origin):
                 return page("请重新打开管理页", status="403 Forbidden")
             user, action = fields.get("user", [""])[0], fields.get("action", [""])[0]
+            back = '<p><a href="/admin">返回客户管理</a></p>'
+            if action == "add":
+                label = fields.get("label", [""])[0]
+                created = manager("add", data=label.encode()).decode().strip()
+                return page(f"已新增 {escape(label)}（{escape(created)}）", back)
             if action == "archive":
                 bundles = json.loads(manager("bundles"))
                 if not bundles:
@@ -138,15 +152,26 @@ def application(env, start_response):
                             archive.writestr(f"{name}/{name}-{mode}.conf", config)
                 payload = stream.getvalue()
                 return attachment(payload, "wireguard-users.zip", "application/zip")
-            if not re.fullmatch(r"user(0[1-9]|1[0-9]|2[0-5])", user) or action not in (
+            if not re.fullmatch(r"user[0-9]{2,}", user) or action not in (
                     "issue", "enable", "disable", "bundle", "confirm-rotate", "rotate",
-                    "download-global", "download-proxy"):
+                    "download-global", "download-proxy", "rename", "confirm-delete", "delete"):
                 return page("用户或操作无效", status="400 Bad Request")
             if action.startswith("download-"):
                 mode = action.removeprefix("download-")
                 payload = json.loads(manager("bundle", user))["profiles"][mode].encode()
                 return attachment(payload, f"{user}-{mode}.conf", "application/octet-stream")
-            back = '<p><a href="/admin">返回用户管理</a></p>'
+            if action == "rename":
+                label = fields.get("label", [""])[0]
+                manager("rename", user, data=label.encode())
+                return page(f"{user} 已更名为 {escape(label)}", back)
+            if action == "confirm-delete":
+                return page(f"删除 {user}？", '<p>此操作将删除该客户的记录与密钥。</p>'
+                            f'<form method="post"><input type="hidden" name="csrf" value="{csrf}">'
+                            f'<input type="hidden" name="user" value="{user}">'
+                            '<button name="action" value="delete">确认删除</button></form>' + back)
+            if action == "delete":
+                manager("delete", user)
+                return page(f"已删除 {user}", back)
             if action == "confirm-rotate":
                 return page(f"轮换 {user} 的密钥？", '<p>旧配置会立即失效，轮换后请重新生成并分发两份配置。</p>'
                             f'<form method="post"><input type="hidden" name="csrf" value="{csrf}">'
@@ -166,7 +191,10 @@ def application(env, start_response):
         if not re.fullmatch(r"[A-Za-z0-9_-]{32}", code):
             return page("领取码格式无效", status="400 Bad Request")
         return page("导入配置", profiles(json.loads(manager("redeem", data=code.encode()))))
-    except subprocess.CalledProcessError:
+    except subprocess.CalledProcessError as exc:
+        if exc.returncode == 3 and exc.stderr:
+            return page("操作未完成", f'<p>{escape(exc.stderr.decode(errors="replace"))}</p>'
+                        '<a href="/admin">返回客户管理</a>', "409 Conflict")
         return page("操作未完成", "<p>请检查用户是否启用。若领取码已失效，请重新签发。</p>", "409 Conflict")
     except (ValueError, OSError, subprocess.TimeoutExpired):
         return page("请求未完成", "<p>请返回后重试。</p>", "400 Bad Request")
