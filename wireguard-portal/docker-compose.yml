@@ -1,0 +1,27 @@
+x-backend: &backend
+  build: ./backend
+  env_file: .env
+  environment:
+    PORTAL_DATA: /data
+    AGENT_CERTS: /certs
+    BACKUP_DIR: /backups
+  volumes:
+    - ./data:/data
+    - ./secrets/agents:/certs:ro
+    - ./backups:/backups
+  restart: unless-stopped
+services:
+  api:
+    <<: *backend
+    command: ["uvicorn","app.main:app","--host","0.0.0.0","--port","8000","--no-proxy-headers","--no-access-log"]
+  worker:
+    <<: *backend
+    command: ["python","-m","app.jobs"]
+  web:
+    build: ./frontend
+    volumes:
+      - ./secrets/web:/etc/nginx/tls:ro
+    ports:
+      - "${PORTAL_BIND:-127.0.0.1}:${PORTAL_PORT:-8444}:443"
+    depends_on: [api]
+    restart: unless-stopped

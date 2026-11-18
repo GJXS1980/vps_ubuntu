@@ -297,6 +297,24 @@ def edit(state, args, data):
 EDIT_COMMANDS=("group-create","group-rename","group-delete","batch-enable","batch-disable","batch-group","batch-export")
 
 
+def allocate_peer(state, label, group="", reserved_hosts=(), first_id=1):
+    users = state["users"]
+    used = {u.get("host", int(k[4:]) + 1) for k, u in users.items()}
+    host = next((h for h in range(2, 255) if h not in used and h not in reserved_hosts), None)
+    if host is None:
+        raise CustomerError("当前网段最多容纳 253 个客户")
+    number = state.get("last_id", max((int(k[4:]) for k in users), default=0)) + 1
+    number = max(number, first_id)
+    reserved = {u.get("label", k).casefold() for k, u in users.items()}
+    while f"user{number:02}" in reserved:
+        number += 1
+    name = f"user{number:02}"
+    state["last_id"] = number
+    users[name] = dict(keys(), enabled=True, mode="global", label=label, host=host,
+                       group=group, created=int(time.time()))
+    return name
+
+
 def manage(args):
     if PENDING.exists():
         reconcile(json.loads(PENDING.read_text()))
@@ -357,18 +375,7 @@ def manage(args):
                 label=customer_name(users,label=data["label"])
             else:
                 label = customer_name(users)
-            used = {u.get("host", int(k[4:]) + 1) for k, u in users.items()}
-            host = next((h for h in range(2, 255) if h not in used), None)
-            if host is None:
-                raise CustomerError("当前网段最多容纳 253 个客户")
-            number = state.get("last_id", max((int(k[4:]) for k in users), default=0)) + 1
-            reserved = {u.get("label", k).casefold() for k, u in users.items()}
-            while f"user{number:02}" in reserved:
-                number += 1
-            name = f"user{number:02}"
-            state["last_id"] = number
-            users[name] = dict(keys(), enabled=True, mode="global", label=label, host=host,
-                               group=group, created=int(time.time()))
+            name = allocate_peer(state, label, group)
             args.targets, args.labels=[name],[label]
             apply_state(state)
             print(name)

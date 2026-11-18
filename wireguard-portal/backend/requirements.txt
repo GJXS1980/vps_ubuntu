@@ -1,0 +1,11 @@
+fastapi>=0.115,<1
+uvicorn>=0.30,<1
+sqlalchemy>=2,<3
+alembic>=1.13,<2
+argon2-cffi>=23,<26
+httpx>=0.28,<0.29
+qrcode[pil]>=8,<9
+pyotp>=2.9,<3
+email-validator>=2,<3
+pytest>=8,<10
+cryptography>=41,<51

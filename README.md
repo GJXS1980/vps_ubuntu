@@ -236,3 +236,7 @@ sudo bash manage.sh admin        # 终端交互菜单
 **范围说明**：限速与设备限制要求单 worker，启用这些限制的账号仅提供 TCP；设备限制目前支持 auth_sha1_v4，按客户端标识统计。BT/PT 为端口和明文特征拦截，不保证识别加密流量。锐速提供内核/架构/SHA256 校验后的本地包安装入口，尚无经验证兼容 Ubuntu 22.04 的内置安装包。
 
 安装、Web 访问、完整命令、配置回退和锐速接入说明见 [docs/ADMIN.md](docs/ADMIN.md)。自动测试与实机验收见 [docs/TEST_PLAN.md](docs/TEST_PLAN.md)。
+
+## WireGuard 用户账号与配置派发
+
+独立用户门户提供注册审批、设备配额、双模式配置领取和受限 VPS Agent。安装和测试入口见 [WireGuard 用户中心](wireguard-portal/README.md)。

@@ -1,0 +1,10 @@
+.env
+data/
+secrets/
+backups/
+node_modules/
+dist/
+test-results/
+playwright-report/
+.pytest_cache/
+*.enc

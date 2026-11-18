@@ -1,0 +1,19 @@
+[Unit]
+Description=WireGuard portal management agent
+After=network-online.target wg-quick@wgportal.service
+Requires=wg-quick@wgportal.service
+[Service]
+User=wg-portal
+Group=wg-portal
+WorkingDirectory=/usr/local/lib/wg-portal
+EnvironmentFile=/etc/wg-portal/network
+ExecStart=/usr/local/lib/wg-portal/venv/bin/python /usr/local/lib/wg-portal/api.py
+Restart=on-failure
+RestartSec=5
+UMask=0077
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/etc/wireguard
+[Install]
+WantedBy=multi-user.target
