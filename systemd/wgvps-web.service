@@ -1,0 +1,19 @@
+[Unit]
+Description=WireGuard private configuration portal
+After=network-online.target wg-quick@wgvps.service
+Wants=network-online.target
+
+[Service]
+User=wgvps-web
+WorkingDirectory=/usr/local/lib/wgvps-web
+EnvironmentFile=/etc/wgvps-web/network
+LoadCredential=password:/etc/wgvps-web/password
+LoadCredential=tls.key:/etc/wgvps-web/tls.key
+LoadCredential=tls.crt:/etc/wgvps-web/tls.crt
+ExecStart=/usr/bin/gunicorn --bind ${WEB_ADDRESS}:8443 --workers 2 --threads 4 --timeout 30 --certfile %d/tls.crt --keyfile %d/tls.key wgvps_web:application
+Restart=on-failure
+RestartSec=3
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

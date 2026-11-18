@@ -99,3 +99,33 @@ class Workflow(unittest.TestCase):
             self.assertIn("user02 disabled global", self.cmd("list"))
         self.assertFalse(wg.PENDING.exists())
         self.assertNotIn("# user02\n", wg.CONF.read_text())
+
+    def test_links_and_dual_profiles(self):
+        self.cmd("init")
+
+        def redeem(code):
+            with patch.object(sys, "stdin", io.StringIO(code)):
+                return json.loads(self.cmd("redeem"))
+
+        first = self.cmd("issue")
+        code = self.cmd("issue")
+        with self.assertRaises(ValueError):
+            redeem(first)
+        bundle = redeem(code)
+        self.assertEqual(bundle["name"], "user02")
+        full, proxy = [wg.section(bundle["profiles"][m]) for m in ("global", "proxy")]
+        self.assertEqual(full["Interface"]["PrivateKey"], proxy["Interface"]["PrivateKey"])
+        self.assertEqual(proxy["Peer"]["AllowedIPs"], "10.66.77.1/32")
+        self.assertEqual(full["Peer"]["AllowedIPs"], "0.0.0.0/0, ::/0")
+        with self.assertRaises(ValueError):
+            redeem(code)
+        for action in ("rotate", "disable"):
+            code = self.cmd("issue")
+            self.cmd(action)
+            self.cmd("enable")
+            with self.assertRaises(ValueError):
+                redeem(code)
+        with patch.object(wg.time, "time", return_value=100):
+            code = self.cmd("issue")
+        with patch.object(wg.time, "time", return_value=700), self.assertRaises(ValueError):
+            redeem(code)

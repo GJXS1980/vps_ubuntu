@@ -3,12 +3,16 @@
 import argparse
 import configparser
 import fcntl
+import hashlib
+import hmac
 import json
 import os
 from pathlib import Path
+import secrets
 import subprocess
 import sys
 import tempfile
+import time
 
 ROOT = Path("/etc/wireguard")
 CONF = ROOT / "wgvps.conf"
@@ -94,9 +98,9 @@ def server_config(state):
     return "\n\n".join(peers) + "\n"
 
 
-def profile(state, name):
+def profile(state, name, mode=None):
     user = state["users"][name]
-    global_mode = user["mode"] == "global"
+    global_mode = (mode or user["mode"]) == "global"
     dns = "DNS = 1.1.1.1, 1.0.0.1\n" if global_mode else ""
     routes = "0.0.0.0/0, ::/0" if global_mode else "10.66.77.1/32"
     return (f"[Interface]\nPrivateKey = {user['private']}\nAddress = {addresses(name)}\n"
@@ -134,16 +138,40 @@ def manage(args):
             for name, user in state["users"].items():
                 print(name, "enabled" if user["enabled"] else "disabled", user["mode"])
             return
+        if args.command == "redeem":
+            token = sys.stdin.readline(128).strip()
+            digest = hashlib.sha256(token.encode()).hexdigest()
+            for name, user in state["users"].items():
+                ticket = user.get("ticket")
+                if (user["enabled"] and ticket and ticket["expires"] > time.time()
+                        and hmac.compare_digest(digest, ticket["digest"])):
+                    profiles = {mode: profile(state, name, mode) for mode in ("global", "proxy")}
+                    del user["ticket"]
+                    atomic(STATE, json.dumps(state))
+                    print(json.dumps({"name": name, "profiles": profiles}))
+                    return
+            raise ValueError("领取码无效、已用或已过期")
         user = state["users"][args.user]
+        if args.command == "issue":
+            if not user["enabled"]:
+                raise ValueError("该用户已禁用")
+            token = secrets.token_urlsafe(24)
+            user["ticket"] = {"digest": hashlib.sha256(token.encode()).hexdigest(),
+                              "expires": int(time.time()) + 600}
+            atomic(STATE, json.dumps(state))
+            print(token)
+            return
         if args.command in ("export", "qr"):
             if not user["enabled"]:
                 raise ValueError("该用户已禁用")
-            config = profile(state, args.user)
+            config = profile(state, args.user, getattr(args, "profile_mode", None))
             if args.command == "export":
                 sys.stdout.write(config)
             else:
                 subprocess.run(["qrencode", "-t", "ANSIUTF8"], input=config, text=True, check=True)
             return
+        if args.command in ("rotate", "disable"):
+            user.pop("ticket", None)
         if args.command == "rotate":
             user.update(keys())
         elif args.command == "mode":
@@ -159,11 +187,14 @@ def main():
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("init", help="安装或恢复").add_argument("endpoint")
     commands.add_parser("list", help="查看 25 个用户的状态与模式")
-    for name, desc in (("enable", "启用"), ("disable", "禁用"), ("rotate", "轮换密钥"),
+    commands.add_parser("redeem", help="从标准输入读取一次性领取码")
+    for name, desc in (("issue", "签发十分钟一次性领取码"), ("enable", "启用"), ("disable", "禁用"), ("rotate", "轮换密钥"),
                        ("export", "输出配置到标准输出"), ("qr", "显示终端二维码"),
                        ("mode", "选择客户端路由模式")):
         sub = commands.add_parser(name, help=desc)
         sub.add_argument("user", choices=USERS, metavar="user01..user25")
+        if name in ("export", "qr"):
+            sub.add_argument("--profile-mode", choices=("global", "proxy"))
         if name == "mode":
             sub.add_argument("mode", choices=("global", "proxy"))
     args = parser.parse_args()

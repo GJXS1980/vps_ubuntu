@@ -12,6 +12,24 @@ sudo wgvps-users list
 
 ## 分发配置
 
+### 内网 Web 管理与自助领取
+
+已有 25 人版本的 VPS 只需上传新版 `bin/` 与 `systemd/`，执行 Web 安装器。下例的 `192.168.50.10` 替换为 VPS 上实际配置的内网网卡 IPv4。服务监听该地址的 HTTPS 8443，并校验连接来源属于同一网卡子网。
+
+```bash
+sudo bash bin/wireguard-web-install.sh 192.168.50.10
+sudo cat /etc/wgvps-web/password
+```
+
+1. 从已验证的 SSH 连接获取 **公有 CA 证书** `/etc/wgvps-web/ca.crt`，通过可信渠道在访问设备上安装并信任。保管好服务器上的 `ca.key`。站点证书有效期一年，到期前重跑 Web 安装器续签，原 CA 和管理密码沿用。
+2. 管理员打开 `https://192.168.50.10:8443/admin`，用 `admin` 和上述密码登录。选择一个已分配给该设备的用户，点击“创建分发链接”，将链接私发给使用者。管理页同时支持启用和禁用现有名额。
+3. 使用者在同一可达内网打开链接并点击“领取两份配置”，分别下载或使用另一台设备扫描页面上的二维码。手机可直接选择 WireGuard 的“从文件导入”。领取页无须管理员密码。
+4. 分发链接有效期 10 分钟，成功领取一次即失效。重复签发、禁用账号或轮换密钥会撤销该用户待领取的链接。关闭领取结果页前保存两份配置；未保存可请管理员重新签发。
+
+初次入网的设备需要先能访问分发页。如果 Web 安装器绑定的是 WireGuard 地址 `10.66.77.1`，新手机还没有隧道，可由已入网的管理员在浏览器打开领取结果，让新手机扫描两份二维码。VPC 私网地址同样需要实际的内网路由。若有防火墙，应仅允许相应内网来源访问 TCP 8443。停止 Web 服务可运行 `sudo systemctl disable --now wgvps-web`。
+
+### 命令行分发
+
 手机在 WireGuard 中选择扫码添加，管理员在私密终端显示对应用户的二维码：
 
 ```bash
@@ -39,7 +57,16 @@ sudo wgvps-users qr user02
 sudo wgvps-users mode user02 global
 ```
 
-每次切换后，重新导出或扫码，在设备上替换旧配置并激活。模式是客户端的路由选择，不限制用户自行修改客户端配置。代理服务提供 TCP CONNECT；需要 UDP 应用经过 VPS 时选全局。全局模式需要 VPS 有 IPv6 出口才能访问 IPv6 站点。
+**由使用者切换**：同时导入 `user02-global.conf` 和 `user02-proxy.conf`。切换时先停用当前隧道，再启用目标隧道，无需联系管理员。两份配置属于同一设备，共用一个 peer 和地址。全局模式使用默认路由；代理模式需要在目标应用内指定 SOCKS5，应用的代理开关由使用者控制。服务端的 `mode` 命令仅设定常规导出的默认模式。
+
+Web 领取页会同时生成两份配置，也可以在命令行独立导出：
+
+```bash
+(umask 077 && sudo wgvps-users export user02 --profile-mode global > user02-global.conf)
+(umask 077 && sudo wgvps-users export user02 --profile-mode proxy > user02-proxy.conf)
+```
+
+轮换密钥后两份配置都需要重新领取。代理服务提供 TCP CONNECT；需要 UDP 应用经过 VPS 时选全局。全局模式需要 VPS 有 IPv6 出口才能访问 IPv6 站点。
 
 ## 禁用、恢复与密钥轮换
 
