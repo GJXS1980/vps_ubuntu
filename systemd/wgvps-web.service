@@ -10,7 +10,18 @@ EnvironmentFile=/etc/wgvps-web/network
 LoadCredential=password:/etc/wgvps-web/password
 LoadCredential=tls.key:/etc/wgvps-web/tls.key
 LoadCredential=tls.crt:/etc/wgvps-web/tls.crt
-ExecStart=/usr/bin/gunicorn --bind ${WEB_ADDRESS}:8443 --workers 2 --threads 4 --timeout 30 --certfile %d/tls.crt --keyfile %d/tls.key wgvps_web:application
+
+# The default WireGuard deployment admits the administrator's user02 peer.
+# Custom LAN bindings retain their existing site firewall policy.
+ExecStartPre=+/bin/sh -ec 'if [ "$$WEB_ADDRESS" = 10.66.77.1 ]; then \
+    set -- -i wgvps -s 10.66.77.3/32 -d 10.66.77.1/32 -p tcp --dport 8443 -m comment --comment wgvps-web-user02 -j ACCEPT; \
+    /usr/sbin/iptables -w -C INPUT "$$@" 2>/dev/null || /usr/sbin/iptables -w -I INPUT 1 "$$@"; \
+    fi'
+ExecStart=/usr/bin/gunicorn --bind ${WEB_ADDRESS}:8443 --workers 2 --threads 4 --timeout 30 --certfile ${CREDENTIALS_DIRECTORY}/tls.crt --keyfile ${CREDENTIALS_DIRECTORY}/tls.key wgvps_web:application
+ExecStopPost=+/bin/sh -ec 'if [ "$$WEB_ADDRESS" = 10.66.77.1 ]; then \
+    set -- -i wgvps -s 10.66.77.3/32 -d 10.66.77.1/32 -p tcp --dport 8443 -m comment --comment wgvps-web-user02 -j ACCEPT; \
+    if /usr/sbin/iptables -w -C INPUT "$$@" 2>/dev/null; then /usr/sbin/iptables -w -D INPUT "$$@"; fi; \
+    fi'
 Restart=on-failure
 RestartSec=3
 UMask=0077
