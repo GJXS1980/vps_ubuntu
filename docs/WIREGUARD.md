@@ -14,6 +14,33 @@ sudo wgvps-users list
 
 ## 分发配置
 
+### 单公网 IPv4 的备用端口
+
+主端口为 UDP 51820。需要备用入口时，在云安全组额外放行 UDP 51821，把新版脚本上传到已有 VPS，在项目根目录执行：
+
+```bash
+sudo bash bin/wireguard-backup-port.sh
+sudo systemctl status wgvps-backup-port --no-pager
+```
+
+该服务将公网网卡收到的本机 UDP 51821 流量转发到同一个 WireGuard 接口，沿用设备现有密钥。服务随隧道启动。备用端口被其他程序占用时会报错。
+
+- **Windows 官方客户端**：先激活原隧道。用管理员 PowerShell 在本项目目录运行下方命令，将示例名称换成 WireGuard 窗口中的实际隧道名。任务每分钟检查一次；最近 180 秒没有成功握手且连续三次探测隧道网关失败时，切换当前运行中的端口。原配置可继续使用，关闭隧道后任务不会主动连接。
+- **iPhone 官方客户端**：在原隧道点「编辑」，将对端 Endpoint 末尾的 `:51820` 改为 `:51821`，保存并重新开启。下次也可以改回。手机端需要手动切换，无需重新扫码或导入密钥。
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\bin\wireguard-failover.ps1 -Tunnel user01-global
+```
+
+验收时先在客户端切到备用端口，用隧道内的服务确认连接成功。Windows 可用以下命令查看实际端口和任务状态。单 IP 的两个端口都不可达时，恢复连接需要另一条可达入口。这里的两个端口预置在本地，不依赖订阅服务。
+
+```powershell
+& "$env:ProgramFiles\WireGuard\wg.exe" show user01-global endpoints
+Get-ScheduledTaskInfo -TaskName WgvpsFailover-user01-global
+```
+
+撤销时先将设备切回 51820。Windows 用管理员 PowerShell 执行 `Unregister-ScheduledTask -TaskName WgvpsFailover-user01-global`，重新激活原配置；VPS 执行 `sudo systemctl disable --now wgvps-backup-port`，随后可移除云安全组中的备用端口规则。
+
 ### 管理员连接 VPS 后，在浏览器生成和分发配置
 
 已有 25 人版的 VPS 上传新版 `bin/` 和 `systemd/` 后，运行一次 Web 安装器。默认监听 WireGuard 网关 `10.66.77.1:8443`。已有旧版 Web 服务也要重跑此脚本，以更新页面、后台命令及服务账号权限。
